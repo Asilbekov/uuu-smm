@@ -1,12 +1,12 @@
 {
-  "name": "nextjs_tailwind_shadcn_ts",
+  "name": "uuu-smm",
   "version": "0.2.0",
   "private": true,
   "scripts": {
     "postinstall": "prisma generate",
-    "dev": "DATABASE_URL=postgresql://neondb_owner:npg_omga5szZAf4l@ep-shiny-paper-aousfq8l-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?sslmode=require next dev -p 3000 2>&1 | tee dev.log",
+    "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "build": "prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
-    "start": "DATABASE_URL=postgresql://neondb_owner:npg_omga5szZAf4l@ep-shiny-paper-aousfq8l-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?sslmode=require NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
+    "start": "NODE_ENV=production node .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
