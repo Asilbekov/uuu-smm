@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic';
 import { AttachmentItem, attachmentFileUrl, formatSize, typeIcon } from '@/components/attachment-utils';
 import LangButton from '@/components/lang-button';
+import SmmRoleButton from '@/components/smm-role-button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,7 +16,7 @@ import { api } from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Question } from '@/lib/app-types';
 import { countAnsweredProgress, readTestProgress, type SavedTestProgress } from '@/lib/test-progress';
-import { ArrowLeft, BookOpen, BookmarkX, Bot, Banknote, Bell, Briefcase, Building2, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Compass, Dices, Edit, ExternalLink, FlaskConical, Hash, Home, ImagePlus, Landmark, LayoutGrid, Library, Link2, ListChecks, Loader2, MapPin, Megaphone, MessageCircle, Palette, Paperclip, Pencil, Play, Plus, RefreshCw, Rows3, Search, ShieldAlert, Shuffle, Sparkles, Trash2, TreeDeciduous, UserPlus, Users, Video, X } from 'lucide-react';
+import { ArrowLeft, BookOpen, BookmarkX, Bot, Banknote, Bell, Briefcase, Building2, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Compass, Dices, Edit, ExternalLink, FlaskConical, Hash, Home, ImagePlus, Landmark, LayoutGrid, Library, Link2, ListChecks, Loader2, Mail, MapPin, Megaphone, MessageCircle, Palette, Paperclip, Pencil, Play, Plus, RefreshCw, Rows3, Search, ShieldAlert, Shuffle, Sparkles, Trash2, TreeDeciduous, UserPlus, Users, Video, X } from 'lucide-react';
 const AttachmentsEditor = dynamic(() => import('@/components/attachments').then(m => m.AttachmentsEditor), { ssr: false });
 const AttachmentsList = dynamic(() => import('@/components/attachments').then(m => m.AttachmentsList), { ssr: false });
 // Version tree — its own on-demand chunk (fetches the family + renders SVG)
@@ -144,7 +145,10 @@ export interface DashboardViewProps {
   mySmmRole: 'customer' | 'specialist';
   openSmmWizard: (mode: 'invite' | 'apply', target: any) => void;
   toggleSmmBookmark: (kind: 'specialist' | 'event', id: string) => void;
-  gotoSmmPage: (p: 'smm-events' | 'smm-inbox') => void;
+  gotoSmmPage: (p: 'smm-events' | 'smm-inbox' | 'smm-mail' | 'smm-my-roles' | 'smm-shared-roles') => void;
+  // Switch the ACCOUNT KIND (customer ↔ SMM specialist) — the top-panel
+  // button shaped like the language button.
+  onSwitchRole: () => void;
 }
 
 export default function DashboardView({
@@ -190,6 +194,7 @@ export default function DashboardView({
   openSmmWizard,
   toggleSmmBookmark,
   gotoSmmPage,
+  onSwitchRole,
 }: DashboardViewProps) {
   // ── State: read straight from the zustand domain stores ─────────────────
   // app-root keeps the ACTION handlers (they orchestrate the query cache);
@@ -1033,18 +1038,17 @@ export default function DashboardView({
                   <Plus className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">{smmActive && mySmmRole === 'customer' ? t('smmCreateEvent') : t('createTest')}</span>
                 </Button>
               )}
-              {/* The «Изменить» toggle switches the tests edit-mode — it makes
-              no sense over an SMM feed (edits there are per-card on OWN
-              events/specialists), so it hides in SMM mode. */}
-              {!smmActive && (
-                <Button
+              {/* «Изменить» — the edit-mode toggle in EVERY content mode: in
+              the tests feed it flips the cards into the edit flow; over the
+              SMM feed it collapses the cards to the calm state (the same
+              editMode the event slides already honor). */}
+              <Button
                   variant="outline"
                   onClick={() => setEditMode(v => !v)}
                   className={`rounded-full shrink-0 h-8 w-8 p-0 sm:h-9 sm:w-auto sm:px-4 lg:h-10 lg:text-sm ${editMode ? 'bg-cta hover:bg-cta/90 text-white border-cta' : 'border-black'}`}
                 >
-                  <Edit className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">{t('editTest')}</span>
+                  <Edit className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">{editMode ? t('editModeOn') : t('editTest')}</span>
                 </Button>
-              )}
             </div>
             <div className="flex items-center gap-1 sm:gap-2 shrink-0 ml-auto">
               <Button
@@ -1079,6 +1083,11 @@ export default function DashboardView({
                 </span>
               </Button>
               <LangButton lang={lang} onChange={cycleLang} className="border-black px-2 sm:px-3" />
+              {/* Account switcher — the language button's twin: one tap flips
+              the account kind (customer ↔ SMM specialist) in SMM mode. */}
+              {smmActive && (
+                <SmmRoleButton role={mySmmRole} onSwitch={onSwitchRole} className="border-black px-2 sm:px-3" />
+              )}
               <div className="hidden md:block text-right min-w-0">
                 <p className="text-sm font-medium truncate max-w-[180px]">{effectiveUser?.name}</p>
                 <p className="text-xs text-muted-foreground truncate max-w-[180px]">{effectiveUser?.email}</p>
@@ -1992,20 +2001,36 @@ export default function DashboardView({
             className="max-w-2xl mx-auto px-3 sm:px-4 pt-2"
             style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
           >
-            <div className={`grid ${effectiveUser ? 'grid-cols-3' : 'grid-cols-2'} gap-2`}>
-              {/* SMM third page: the customer's events manager / the specialist's
-              invitations inbox (the brief's «вкладка ролей» + offer flows) */}
+            <div className={`grid ${effectiveUser ? 'grid-cols-4' : 'grid-cols-2'} gap-2`}>
+              {/* The role-specific FIRST page button: the customer's «Личные
+              роли» review / the specialist's «Почта» hub. The customer's
+              events manager stays reachable from the roles page's sub-dock. */}
               {effectiveUser && (
                 <button
                   type="button"
-                  onClick={() => setPage(mySmmRole === 'customer' ? 'smm-events' : 'smm-inbox')}
+                  onClick={() => setPage(mySmmRole === 'customer' ? 'smm-my-roles' : 'smm-mail')}
                   disabled={loading}
-                  title={mySmmRole === 'customer' ? t('smmEventsTitle') : t('smmInboxTitle')}
-                  aria-label={mySmmRole === 'customer' ? t('smmEventsTitle') : t('smmInboxTitle')}
-                  className="min-w-0 flex items-center justify-center gap-1.5 h-9 lg:h-10 px-1 [@media(min-width:420px)]:px-2 rounded-full border-2 text-[11px] [@media(min-width:420px)]:text-xs sm:text-[13px] lg:text-sm font-semibold transition-colors border-black bg-white hover:bg-muted/50"
+                  title={mySmmRole === 'customer' ? t('smmMyRolesTitle') : t('smmMailTitle')}
+                  aria-label={mySmmRole === 'customer' ? t('smmMyRolesTitle') : t('smmMailTitle')}
+                  className="min-w-0 flex items-center justify-center gap-1.5 h-9 lg:h-10 px-0.5 [@media(min-width:420px)]:px-2 rounded-full border-2 text-[11px] [@media(min-width:420px)]:text-xs sm:text-[13px] lg:text-sm font-semibold transition-colors border-black bg-white hover:bg-muted/50"
                 >
-                  {mySmmRole === 'customer' ? <Briefcase className="w-4 h-4 shrink-0 [@media(max-width:479px)]:hidden" /> : <Bell className="w-4 h-4 shrink-0 [@media(max-width:479px)]:hidden" />}
-                  <span className="min-w-0 truncate">{mySmmRole === 'customer' ? t('smmEventsTitle') : t('smmInboxTitle')}</span>
+                  {mySmmRole === 'customer' ? <Briefcase className="w-4 h-4 shrink-0 [@media(max-width:479px)]:hidden" /> : <Mail className="w-4 h-4 shrink-0 [@media(max-width:479px)]:hidden" />}
+                  <span className="min-w-0 truncate">{mySmmRole === 'customer' ? t('smmMyRolesTitle') : t('smmMailTitle')}</span>
+                </button>
+              )}
+              {/* «Общие роли» — the shared role (ТЗ) template library everyone
+              can browse and contribute to. */}
+              {effectiveUser && (
+                <button
+                  type="button"
+                  onClick={() => setPage('smm-shared-roles')}
+                  disabled={loading}
+                  title={t('smmSharedRolesTitle')}
+                  aria-label={t('smmSharedRolesTitle')}
+                  className="min-w-0 flex items-center justify-center gap-1.5 h-9 lg:h-10 px-0.5 [@media(min-width:420px)]:px-2 rounded-full border-2 text-[11px] [@media(min-width:420px)]:text-xs sm:text-[13px] lg:text-sm font-semibold transition-colors border-black bg-white hover:bg-muted/50"
+                >
+                  <Users className="w-4 h-4 shrink-0 [@media(max-width:479px)]:hidden" />
+                  <span className="min-w-0 truncate">{t('smmSharedRolesTitle')}</span>
                 </button>
               )}
               <button

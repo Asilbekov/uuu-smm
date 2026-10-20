@@ -151,6 +151,9 @@ import SmmWizardView from '@/components/pages/smm-wizard-view';
 import SmmEventsView from '@/components/pages/smm-events-view';
 import SmmEventEditorView from '@/components/pages/smm-event-editor-view';
 import SmmInboxView from '@/components/pages/smm-inbox-view';
+import SmmMailView from '@/components/pages/smm-mail-view';
+import SmmMyRolesView from '@/components/pages/smm-my-roles-view';
+import SmmSharedRolesView from '@/components/pages/smm-shared-roles-view';
 import { useSmmStore, smmNow } from '@/stores/smm-store';
 import { useEventEditorStore, resetEventForm, eventEditorNow } from '@/stores/event-editor-store';
 import CreateEditView from '@/components/pages/create-edit-view';
@@ -1136,6 +1139,32 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     }).catch((e: any) => {
       // The linked event is gone or hidden: dead-link screen (the same
       // behavior the tests' deep link has); transient failures stay silent.
+      if (String(e?.message || '').toLowerCase().includes('not found')) setDeadLink(true);
+      else cleanUrl();
+    });
+  });
+
+  // Shared ROLE link (?role=<id>): open that template's card on the «Общие
+  // роли» page — the shared-roles analogue of the tests' ?test= / the
+  // events' ?event= deep links. A guest lands on auth first; after login
+  // this handler fires and opens the template.
+  const sharedRoleHandledRef = useRef(false);
+  const [sharedRoleSeed, setSharedRoleSeed] = useState<any>(null);
+  const [focusRoleId, setFocusRoleId] = useState<string | null>(null);
+  useEffect(() => {
+    if (sharedRoleHandledRef.current || !dataReady || !effectiveUser) return;
+    let raw: string | null = null;
+    try { raw = new URLSearchParams(window.location.search).get('role'); } catch { raw = null; }
+    if (!raw) return;
+    sharedRoleHandledRef.current = true;
+    const id = raw.trim().slice(0, 40);
+    const cleanUrl = () => { try { window.history.replaceState({}, '', window.location.pathname); } catch {} };
+    api.getSmmSharedRole(id).then((tpl: any) => {
+      setSharedRoleSeed(tpl);
+      setFocusRoleId(id);
+      setPage('smm-shared-roles');
+      cleanUrl();
+    }).catch((e: any) => {
       if (String(e?.message || '').toLowerCase().includes('not found')) setDeadLink(true);
       else cleanUrl();
     });
@@ -2875,7 +2904,7 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
   // ─── SMM openers ────────────────────────────────────────────────────────
   // Group chat about an SMM entity: the SAME window + polling as the per-test
   // chat, keyed by the «smm-e:<id>» / «smm-u:<id>» scope prefix.
-  const openSmmGroupChat = (kind: 'event' | 'specialist', entity: any) => {
+  const openSmmGroupChat = (kind: 'event' | 'specialist' | 'shared-role', entity: any) => {
     if (isGuestNow()) { setRegisterWall('chat'); return; }
     setAiCardTestId(null);
     setDashFilesOpen(false);
@@ -2884,7 +2913,7 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     setGroupInput('');
     dashGroupTitleRef.current = kind === 'event' ? String(entity?.title || '') : String(entity?.name || '');
     stashDashWindowTest({ ...entity, smmKind: kind });
-    setDashGroupTestId(`smm-${kind === 'event' ? 'e' : 'u'}:${entity.id}`);
+    setDashGroupTestId(`smm-${kind === 'event' ? 'e' : kind === 'specialist' ? 'u' : 'r'}:${entity.id}`);
   };
   // Files of an SMM entity (the polymorphic SmmFile table) — the SAME window
   // format as the test files window.
@@ -2987,7 +3016,55 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     }
     st.setWizardBusy(false);
   };
-  const gotoSmmPage = (p: 'smm-events' | 'smm-inbox') => setPage(p);
+  const gotoSmmPage = (p: 'smm-events' | 'smm-inbox' | 'smm-mail' | 'smm-my-roles' | 'smm-shared-roles') => setPage(p);
+  // ─── ACCOUNT SWITCHER — the language button's twin: one tap flips the
+  // account kind (customer ↔ SMM specialist). The server value User.smmRole
+  // changes, so the feed kind, the dock buttons and every SMM page follow.
+  // Role-specific pages that the other kind cannot use fall back to the
+  // dashboard (the feed re-derives itself from the new role).
+  const switchSmmRole = async () => {
+    if (isGuestNow()) { setRegisterWall('home'); return; }
+    const next: 'customer' | 'specialist' = mySmmRole === 'customer' ? 'specialist' : 'customer';
+    const st = useSessionStore.getState();
+    if (st.user) st.setUser({ ...st.user, smmRole: next });
+    if (st.hydratedUser) st.setHydratedUser({ ...st.hydratedUser, smmRole: next });
+    try {
+      await api.updateSmmProfile({ smmRole: next });
+      toast({ title: next === 'customer' ? t('smmSwitchCustomer') : t('smmSwitchSpecialist') });
+    } catch (e: any) {
+      if (st.user) st.setUser({ ...st.user, smmRole: mySmmRole });
+      if (st.hydratedUser) st.setHydratedUser({ ...st.hydratedUser, smmRole: mySmmRole });
+      toast({ title: t('error'), description: e?.message || 'Error', variant: 'destructive' });
+      return;
+    }
+    const cur = navNow().page;
+    if (cur === 'smm-my-roles' || cur === 'smm-events') setPage('dashboard');
+    refreshSmmFeed();
+    void refreshEventsFeed();
+  };
+  // «Личное» / «Общее» from the SMM pages' docks: land on the dashboard's
+  // test library in the requested content mode.
+  const gotoLibraryPage = (discover: boolean) => {
+    const nav = useNavStore.getState();
+    nav.setDiscoverMode(discover);
+    if (nav.viewingUser) nav.setViewingUser(null);
+    setPage('dashboard');
+  };
+  // The roles page's sub-dock «Мероприятия»: open the events page focused
+  // on the event (fetching its detail if the feed does not carry it yet).
+  const [initialManageEventId, setInitialManageEventId] = useState<string | null>(null);
+  const gotoEventsPage = (focusEventId?: string | null, manage?: boolean) => {
+    setInitialManageEventId(manage ? (focusEventId || null) : null);
+    if (focusEventId) {
+      setFocusEventId(focusEventId);
+      if (!eventsItems.some(x => x.id === focusEventId)) {
+        api.getSmmEvent(focusEventId).then((detail: any) => {
+          setEventsItems(prev => (prev.some(x => x.id === focusEventId) ? prev : [detail, ...prev]));
+        }).catch(() => {});
+      }
+    }
+    setPage('smm-events');
+  };
   // The window's open effect: resume the test's most recent thread — or
   // spawn a fresh (empty, unsaved) one, «Новый чат» style. No passport.
   React.useEffect(() => {
@@ -3174,7 +3251,7 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
   // «smm-e:» / «smm-u:» prefixes) poll the polymorphic SMM chat instead.
   useEffect(() => {
     if (!dashGroupTestId) return;
-    const smmScope: 'event' | 'specialist' | null = dashGroupTestId.startsWith('smm-e:') ? 'event' : dashGroupTestId.startsWith('smm-u:') ? 'specialist' : null;
+    const smmScope: 'event' | 'specialist' | 'shared-role' | null = dashGroupTestId.startsWith('smm-e:') ? 'event' : dashGroupTestId.startsWith('smm-u:') ? 'specialist' : dashGroupTestId.startsWith('smm-r:') ? 'shared-role' : null;
     const smmScopeId = smmScope ? dashGroupTestId.slice(dashGroupTestId.indexOf(':') + 1) : '';
     let stop = false;
     const poll = async () => {
@@ -3220,7 +3297,7 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     setGroupInput('');
     setGroupSending(true);
     try {
-      const smmScope: 'event' | 'specialist' | null = dashGroupTestId.startsWith('smm-e:') ? 'event' : dashGroupTestId.startsWith('smm-u:') ? 'specialist' : null;
+      const smmScope: 'event' | 'specialist' | 'shared-role' | null = dashGroupTestId.startsWith('smm-e:') ? 'event' : dashGroupTestId.startsWith('smm-u:') ? 'specialist' : dashGroupTestId.startsWith('smm-r:') ? 'shared-role' : null;
       const saved = smmScope
         ? await api.sendSmmMessage(smmScope, dashGroupTestId.slice(dashGroupTestId.indexOf(':') + 1), text)
         : await api.sendGroupMessage(dashGroupTestId, text);
@@ -4374,6 +4451,62 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     else if (key === 'group') { setEditOpen(false); setDashFilesOpen(false); openCardGroupChat(t0); }
   } };
 
+  // The chat + files WINDOWS («Чат»/«Файлы» from an SMM card) as a shared
+  // overlay fragment: the dashboard renders it AND so do the SMM pages
+  // (Личные роли / Общие роли / Почта) — the windows are fixed-position, so
+  // they work identically over any page.
+  const dashOverlays = (
+    <>
+      {dashFiles && (
+        <AttachmentsBottomSheet
+          items={dashFiles.items}
+          open={dashFilesOpen}
+          onOpenChange={v => { if (!v) closeCardFiles(); }}
+          hideLauncher
+          title={t('attachedFiles', { n: dashFiles.items.length })}
+          subtitle={dashFiles.title}
+          switcher={dashSwitcher}
+        />
+      )}
+      {dashFiles && dashFilesSideMounted && (
+        <div className="hidden lg:flex fixed inset-0 z-50 items-center justify-end p-5 pointer-events-none">
+          <div className="pointer-events-auto">
+            <AttachmentsSidePanel
+              items={dashFiles.items}
+              onClose={closeCardFiles}
+              title={t('attachedFiles', { n: dashFiles.items.length })}
+              subtitle={dashFiles.title}
+              switcher={dashSwitcher}
+            />
+          </div>
+        </div>
+      )}
+      {dashGroupTestId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-end lg:p-5 pointer-events-none">
+          <div className="pointer-events-auto max-h-full">
+            <GroupChatPanel
+              open
+              onClose={closeCardGroupChat}
+              title={t('chat')}
+              subtitle={dashGroupTitleRef.current}
+              messages={groupMessages}
+              currentUserId={user?.id}
+              input={groupInput}
+              onInputChange={setGroupInput}
+              onSend={sendDashGroupMessage}
+              sending={groupSending}
+              endRef={groupEndRef}
+              inputPlaceholder={t('messageGroup')}
+              onOpenProfile={openUserLibrary}
+              openProfileLabel={t('openProfile')}
+              switcher={dashSwitcher}
+            />
+          </div>
+        </div>
+      )}
+    </>
+  );
+
   // DASHBOARD (view extracted to src/components/pages/dashboard-view.tsx)
   if (effectivePage === 'dashboard') {
     return (
@@ -4423,6 +4556,7 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
           openSmmWizard={openSmmWizard}
           toggleSmmBookmark={toggleSmmBookmark}
           gotoSmmPage={gotoSmmPage}
+          onSwitchRole={switchSmmRole}
         />
         {/* THE DASHBOARD AI WINDOW — «Обсудить с ИИ»: opens STRAIGHT INTO the
         conversation (the test's most recent thread, or a fresh one); the AI
@@ -4459,62 +4593,10 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
             </div>
           </div>
         )}
-        {/* THE DASHBOARD FILES WINDOW — «Файлы» from a card: the SAME window
-        format as the AI window — right-docked panel on desktop (the same
-        fixed wrapper), resizable bottom sheet on mobile. The header wears
-        the title + the test's name; the body lists the attachments. */}
-        {dashFiles && (
-          <AttachmentsBottomSheet
-            items={dashFiles.items}
-            open={dashFilesOpen}
-            onOpenChange={v => { if (!v) closeCardFiles(); }}
-            hideLauncher
-            title={t('attachedFiles', { n: dashFiles.items.length })}
-            subtitle={dashFiles.title}
-            switcher={dashSwitcher}
-          />
-        )}
-        {dashFiles && dashFilesSideMounted && (
-          <div className="hidden lg:flex fixed inset-0 z-50 items-center justify-end p-5 pointer-events-none">
-            <div className="pointer-events-auto">
-              <AttachmentsSidePanel
-                items={dashFiles.items}
-                onClose={closeCardFiles}
-                title={t('attachedFiles', { n: dashFiles.items.length })}
-                subtitle={dashFiles.title}
-                switcher={dashSwitcher}
-              />
-            </div>
-          </div>
-        )}
-        {/* THE DASHBOARD GROUP CHAT WINDOW — «Чат» from a card: the SAME
-        window format as the files window — right-docked panel on desktop
-        (the same fixed wrapper the AI window wears), resizable bottom sheet
-        on mobile (MobileChatSheet brings its own fixed overlay). Everyone's
-        chat about THIS test; the poll keeps it live without WebSockets. */}
-        {dashGroupTestId && (
-          <div className="fixed inset-0 z-50 flex items-center justify-end lg:p-5 pointer-events-none">
-            <div className="pointer-events-auto max-h-full">
-              <GroupChatPanel
-                open
-                onClose={closeCardGroupChat}
-                title={t('chat')}
-                subtitle={dashGroupTitleRef.current}
-                messages={groupMessages}
-                currentUserId={user?.id}
-                input={groupInput}
-                onInputChange={setGroupInput}
-                onSend={sendDashGroupMessage}
-                sending={groupSending}
-                endRef={groupEndRef}
-                inputPlaceholder={t('messageGroup')}
-                onOpenProfile={openUserLibrary}
-                openProfileLabel={t('openProfile')}
-                switcher={dashSwitcher}
-              />
-            </div>
-          </div>
-        )}
+        {/* THE DASHBOARD FILES + CHAT WINDOWS — the shared overlay fragment
+        (see dashOverlays): rendered here AND over the SMM pages, since the
+        windows are fixed-position and work over any page. */}
+        {dashOverlays}
         {/* THE DASHBOARD EDIT WINDOW — «Редактировать» from a card opens the
         SAME window the taking screen uses (resizable bottom sheet on mobile,
         centered dialog on desktop, header switcher, Save) instead of the
@@ -4677,7 +4759,13 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
           }}
           onOpenProfilePage={() => setPage('profile')}
           onCycleLang={cycleLang}
+          onSwitchRole={switchSmmRole}
+          onGotoMyRoles={() => setPage('smm-my-roles')}
+          onGotoSharedRoles={() => setPage('smm-shared-roles')}
+          mySmmRole={mySmmRole}
+          initialManageEventId={initialManageEventId}
         />
+        {dashOverlays}
         <AlertDialog open={!!deleteEventId} onOpenChange={() => setDeleteEventId(null)}>
           <AlertDialogContent>
             <AlertDialogHeader>
@@ -4696,6 +4784,88 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
   // SMM INBOX — the specialist's invitations + application statuses.
   if (effectivePage === 'smm-inbox') {
     return <SmmInboxView goHome={() => setPage('dashboard')} />;
+  }
+
+  // SMM MAIL — «Почта»: the shared requests hub (received / sent), the
+  // specialist's dock button. Same uniform panels; the page's own sub-dock
+  // switches the two boxes.
+  if (effectivePage === 'smm-mail') {
+    return (
+      <>
+        <SmmMailView
+          user={effectiveUser ? { id: effectiveUser.id, name: effectiveUser.name, email: (effectiveUser as any).email || '', image: (effectiveUser as any).image || null } : null}
+          myAvatar={myAvatar}
+          mySmmRole={mySmmRole}
+          goHome={() => setPage('dashboard')}
+          onOpenProfilePage={() => setPage('profile')}
+          onCycleLang={cycleLang}
+          onSwitchRole={switchSmmRole}
+          onGotoMyRoles={() => setPage('smm-my-roles')}
+          onGotoSharedRoles={() => setPage('smm-shared-roles')}
+          onGotoLibraryMine={() => gotoLibraryPage(false)}
+          onGotoLibraryDiscover={() => gotoLibraryPage(true)}
+          onOpenEvent={(eventId: string) => gotoEventsPage(eventId)}
+        />
+        {dashOverlays}
+      </>
+    );
+  }
+
+  // SMM MY ROLES — the customer's «Личные роли» page: every role (ТЗ) of
+  // their events in one review feed, the dock button that replaced
+  // «Мероприятия» (which lives on in the page's own sub-dock).
+  if (effectivePage === 'smm-my-roles') {
+    return (
+      <>
+        <SmmMyRolesView
+          user={effectiveUser ? { id: effectiveUser.id, name: effectiveUser.name, email: (effectiveUser as any).email || '', image: (effectiveUser as any).image || null } : null}
+          myAvatar={myAvatar}
+          pinnedEventIds={smmBmEvents}
+          goHome={() => setPage('dashboard')}
+          onOpenProfilePage={() => setPage('profile')}
+          onCycleLang={cycleLang}
+          onSwitchRole={switchSmmRole}
+          onGotoEvents={gotoEventsPage}
+          onGotoMail={() => setPage('smm-mail')}
+          onGotoSharedRoles={() => setPage('smm-shared-roles')}
+          onGotoLibraryMine={() => gotoLibraryPage(false)}
+          onGotoLibraryDiscover={() => gotoLibraryPage(true)}
+          onCreateEvent={startCreateEvent}
+          onChatEvent={(ev: any) => openSmmGroupChat('event', ev)}
+          onFilesEvent={(ev: any, _n: number) => openSmmFiles('event', ev)}
+          onShareEventLink={doShareEventLink}
+          onToggleEventBookmark={(eventId: string) => void toggleSmmBookmark('event', eventId)}
+        />
+        {dashOverlays}
+      </>
+    );
+  }
+
+  // SMM SHARED ROLES — «Общие роли»: the community library of shared ТЗ
+  // templates; everyone browses, a customer copies into their events, the
+  // author edits/deletes. Deep links ?role=<id> land here.
+  if (effectivePage === 'smm-shared-roles') {
+    return (
+      <>
+        <SmmSharedRolesView
+          user={effectiveUser ? { id: effectiveUser.id, name: effectiveUser.name, email: (effectiveUser as any).email || '', image: (effectiveUser as any).image || null } : null}
+          myAvatar={myAvatar}
+          mySmmRole={mySmmRole}
+          goHome={() => setPage('dashboard')}
+          onOpenProfilePage={() => setPage('profile')}
+          onCycleLang={cycleLang}
+          onSwitchRole={switchSmmRole}
+          onGotoMyRoles={() => setPage('smm-my-roles')}
+          onGotoMail={() => setPage('smm-mail')}
+          onGotoLibraryMine={() => gotoLibraryPage(false)}
+          onGotoLibraryDiscover={() => gotoLibraryPage(true)}
+          onChatTemplate={(tpl: any) => openSmmGroupChat('shared-role', { id: tpl.id, name: tpl.name })}
+          focusRoleId={focusRoleId}
+          seedTemplate={sharedRoleSeed}
+        />
+        {dashOverlays}
+      </>
+    );
   }
 
   // TAKE TEST + RESULTS (view extracted to src/components/pages/take-test-view.tsx)

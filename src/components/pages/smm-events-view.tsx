@@ -8,9 +8,10 @@ import type { Swiper as SwiperClass } from 'swiper';
 import {
   ArrowLeft, Banknote, Briefcase, CalendarClock, ChevronDown, ChevronUp,
   ClipboardList, Compass, LayoutGrid, Library, Loader2, Paperclip,
-  Play, Plus, Rows3, Search, Trash2, Upload, UserPlus, X, Pencil,
+  Play, Plus, Rows3, Search, Trash2, Upload, UserPlus, Users, X, Pencil,
 } from 'lucide-react';
 import LangButton from '@/components/lang-button';
+import SmmRoleButton from '@/components/smm-role-button';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -63,6 +64,14 @@ export interface SmmEventsViewProps {
   onOpenOtherEvent: (o: any) => void;
   onOpenProfilePage: () => void;
   onCycleLang: () => void;
+  // The uniform dock's page routers + the account switcher
+  onGotoMyRoles: () => void;
+  onGotoSharedRoles: () => void;
+  onSwitchRole: () => void;
+  mySmmRole: 'customer' | 'specialist';
+  // When navigated from the roles page's «Управление»: auto-open the event's
+  // manage sheet once its card is in the feed.
+  initialManageEventId?: string | null;
 }
 
 function FeedArrows({ onPrev, onNext, canPrev, canNext, prevLabel, nextLabel }: {
@@ -82,6 +91,8 @@ export default function SmmEventsView({
   focusEventId, goHome, onCreateEvent, onEditEvent, onDeleteEvent, onShareEvent, onPublicEvent,
   onInvite, onChat, onFiles, onToggleBookmark, onOpenProfileUser,
   onOpenOtherEvent, onOpenProfilePage, onCycleLang,
+  onGotoMyRoles, onGotoSharedRoles, onSwitchRole, mySmmRole,
+  initialManageEventId,
 }: SmmEventsViewProps) {
   const lang = useSessionStore(s => s.lang);
   const t = React.useCallback((key: string, vars?: Record<string, string | number>) => tUI(lang, key, vars), [lang]);
@@ -91,6 +102,9 @@ export default function SmmEventsView({
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [searchMounted, setSearchMounted] = React.useState(false);
   const [query, setQuery] = React.useState('');
+  // «Изменить» — the top-panel edit toggle: in edit mode the bottom bar
+  // becomes the editor for the event on screen (own events only).
+  const [editMode, setEditMode] = React.useState(false);
   const swiperRef = React.useRef<SwiperClass | null>(null);
 
   // ── Manage sheet (roles / applications / invitations / files) ────────────
@@ -208,6 +222,18 @@ export default function SmmEventsView({
     }
   }, [focusEventId, visibleEvents.length, viewKind]);
 
+  // Auto-open the manage sheet for the event the roles page sent us to
+  // («Управление» on a role card lands here with initialManageEventId).
+  const [autoManageId, setAutoManageId] = React.useState<string | null>(initialManageEventId || null);
+  React.useEffect(() => {
+    if (!autoManageId || eventsLoading) return;
+    const ev = events.find((e: any) => e.id === autoManageId);
+    if (ev) {
+      void openManage(ev);
+      setAutoManageId(null);
+    }
+  }, [autoManageId, eventsLoading, events.length]);
+
   const userInitials = (user?.name || '?').trim().slice(0, 2).toUpperCase() || '?';
 
   const slideCallbacks = (ev: any) => {
@@ -247,6 +273,7 @@ export default function SmmEventsView({
       ev={ev}
       pinned={pinnedEventIds.includes(ev.id)}
       isOwner={isOwn(ev)}
+      editMode={editMode}
       showUnpin
       onOpenOtherEvent={onOpenOtherEvent}
       {...slideCallbacks(ev)}
@@ -292,6 +319,17 @@ export default function SmmEventsView({
             <Button onClick={onCreateEvent} className="rounded-full bg-primary hover:bg-primary/90 shrink-0 h-8 w-8 p-0 sm:h-9 sm:w-auto sm:px-4 lg:h-10 lg:text-sm" title={t('smmCreateEvent')}>
               <Plus className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">{t('smmCreateEvent')}</span>
             </Button>
+            {/* «Изменить» — the edit-mode toggle (uniform top panel): the
+            bottom bar switches to the event editor for the card on screen. */}
+            <Button
+              variant="outline"
+              onClick={() => setEditMode(v => !v)}
+              className={`rounded-full shrink-0 h-8 w-8 p-0 sm:h-9 sm:w-auto sm:px-4 lg:h-10 lg:text-sm ${editMode ? 'bg-cta hover:bg-cta/90 text-white border-cta' : 'border-black'}`}
+              title={t('editTest')}
+              aria-label={t('editTest')}
+            >
+              <Pencil className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">{editMode ? t('editModeOn') : t('editTest')}</span>
+            </Button>
           </div>
           <div className="flex items-center gap-1 sm:gap-2 shrink-0 ml-auto">
             <Button
@@ -322,6 +360,7 @@ export default function SmmEventsView({
               </span>
             </Button>
             <LangButton lang={lang as Lang} onChange={onCycleLang} className="border-black px-2 sm:px-3" />
+            <SmmRoleButton role={mySmmRole} onSwitch={onSwitchRole} className="border-black px-2 sm:px-3" />
             <div className="hidden md:block text-right min-w-0">
               <p className="text-sm font-medium truncate max-w-[180px]">{user?.name}</p>
               <p className="text-xs text-muted-foreground truncate max-w-[180px]">{user?.email}</p>
@@ -414,41 +453,64 @@ export default function SmmEventsView({
       )}
 
       {/* ── BOTTOM ACTION BAR — the same 60px bar the dashboard keeps above
-          the dock; the customer's main action is «Пригласить специалиста»
-          (own events only — a customer never invites onto a foreign event) ── */}
+          the dock; in edit mode it becomes the event editor for the card on
+          screen (own events only — a foreign card shows the guard toast),
+          otherwise the customer's main action «Пригласить специалиста» ── */}
       {tiktokMode && len > 0 && (
         <div className="desktop-dock-raised shrink-0 z-40 bg-white/95 backdrop-blur-md border-t border-black/10">
           <div className="max-w-2xl mx-auto px-3 sm:px-4 pt-2 pb-2">
-            <Button
-              onClick={() => curEv && onInvite(curEv)}
-              disabled={eventsLoading || !curEv || !curIsOwn}
-              title={curEv && !curIsOwn ? t('smmOnlyOwnEvents') : undefined}
-              className="w-full h-9 lg:h-11 lg:text-base rounded-full bg-primary hover:bg-primary/90"
-            >
-              <UserPlus className="w-4 h-4 mr-2 shrink-0" /> {t('smmInviteSpecialistBtn')}
-            </Button>
+            {editMode ? (
+              <Button
+                onClick={() => curEv && (curIsOwn ? onEditEvent(curEv) : undefined)}
+                disabled={eventsLoading || !curEv || !curIsOwn}
+                title={curEv && !curIsOwn ? t('smmOnlyOwnEvents') : undefined}
+                className="w-full h-9 lg:h-11 lg:text-base rounded-full bg-cta hover:bg-cta/90 text-white"
+              >
+                <Pencil className="w-4 h-4 mr-2 shrink-0" /> {t('editTest')}
+              </Button>
+            ) : (
+              <Button
+                onClick={() => curEv && onInvite(curEv)}
+                disabled={eventsLoading || !curEv || !curIsOwn}
+                title={curEv && !curIsOwn ? t('smmOnlyOwnEvents') : undefined}
+                className="w-full h-9 lg:h-11 lg:text-base rounded-full bg-primary hover:bg-primary/90"
+              >
+                <UserPlus className="w-4 h-4 mr-2 shrink-0" /> {t('smmInviteSpecialistBtn')}
+              </Button>
+            )}
           </div>
         </div>
       )}
 
-      {/* ── LIBRARY PAGES DOCK — the same very-bottom panel: «Мероприятия»
-          (this page, active) | «Личное» | «Общее» switching THIS page's
-          scope (own events ↔ the general events library) ── */}
+      {/* ── LIBRARY PAGES DOCK — the uniform 4 page buttons every main page
+          carries: «Личные роли» | «Общие роли» | «Личное» | «Общее». Here
+          «Личное/Общее» keep their LOCAL meaning — the events page's own
+          scope switch (own events ↔ the general events library). ── */}
       <div className="desktop-dock shrink-0 z-40 bg-white/95 backdrop-blur-md border-t border-black/10">
         <div
           className="max-w-2xl mx-auto px-3 sm:px-4 pt-2"
           style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
         >
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             <button
               type="button"
-              disabled
-              title={t('smmEventsTitle')}
-              aria-label={t('smmEventsTitle')}
-              className="min-w-0 flex items-center justify-center gap-1.5 h-9 lg:h-10 px-1 [@media(min-width:420px)]:px-2 rounded-full border-2 text-[11px] [@media(min-width:420px)]:text-xs sm:text-[13px] lg:text-sm font-semibold transition-colors bg-cta text-white border-cta shadow-md"
+              onClick={onGotoMyRoles}
+              title={t('smmMyRolesTitle')}
+              aria-label={t('smmMyRolesTitle')}
+              className="min-w-0 flex items-center justify-center gap-1.5 h-9 lg:h-10 px-0.5 [@media(min-width:420px)]:px-2 rounded-full border-2 text-[11px] [@media(min-width:420px)]:text-xs sm:text-[13px] lg:text-sm font-semibold transition-colors border-black bg-white hover:bg-muted/50"
             >
               <Briefcase className="w-4 h-4 shrink-0 [@media(max-width:479px)]:hidden" />
-              <span className="min-w-0 truncate">{t('smmEventsTitle')}</span>
+              <span className="min-w-0 truncate">{t('smmMyRolesTitle')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onGotoSharedRoles}
+              title={t('smmSharedRolesTitle')}
+              aria-label={t('smmSharedRolesTitle')}
+              className="min-w-0 flex items-center justify-center gap-1.5 h-9 lg:h-10 px-0.5 [@media(min-width:420px)]:px-2 rounded-full border-2 text-[11px] [@media(min-width:420px)]:text-xs sm:text-[13px] lg:text-sm font-semibold transition-colors border-black bg-white hover:bg-muted/50"
+            >
+              <Users className="w-4 h-4 shrink-0 [@media(max-width:479px)]:hidden" />
+              <span className="min-w-0 truncate">{t('smmSharedRolesTitle')}</span>
             </button>
             <button
               type="button"
