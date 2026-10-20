@@ -40,6 +40,28 @@ model User {
   aiThreads AiThread[]
   // Saved in-test progress ("Continue Test"), previously localStorage
   savedProgress SavedProgress[]
+
+  // ── SMM MARKETPLACE ────────────────────────────────────────────────────
+  // Account kind: "customer" (заказчик: предприниматель/государство) or
+  // "specialist" (SMM-специалист). Chosen at registration, switchable in
+  // the profile; the dashboard feed swaps its content kind accordingly.
+  smmRole      String  @default("customer")
+  // Specialist profile (the «анкета»): short headline, resume text,
+  // presentation video (tg:/data:/https: — served like other media),
+  // city, rate text and the «open to work» flag.
+  smmHeadline  String  @default("")
+  smmResume    String  @default("")
+  smmVideoUrl  String?
+  smmCity      String  @default("")
+  smmRate      String  @default("")
+  smmReady     Boolean @default(true)
+  smmBookmarks SmmBookmark[]
+  // Opposite sides of the SMM relations
+  smmEventsOwned         SmmEvent[]      @relation("SmmEventCustomer")
+  smmInvitationsSent     SmmInvitation[] @relation("SmmInvitationCustomer")
+  smmInvitationsReceived SmmInvitation[] @relation("SmmInvitationSpecialist")
+  smmApplications        SmmApplication[] @relation("SmmApplicationSpecialist")
+  smmChatMessages        SmmChatMessage[]
 }
 
 // Opaque session token → user. The phone stores ONLY the token cookie
@@ -89,6 +111,148 @@ model SavedProgress {
 
 // Server-side machine-translation cache (replaces the client localStorage
 // translation cache — shared by every visitor, survives restarts).
+// ─── SMM MARKETPLACE ────────────────────────────────────────────────────────
+
+// A file attached to an SMM owner: a specialist's анкета (resume, portfolio
+// works) or a customer's event (briefs, media). ownerType: "user" | "event".
+// The url reuses the same storage rules as Attachment: tg:<file_id> (the
+// Telegram channel) or a small data: URL; uploads go through the SAME
+// POST /api/attachments/upload route.
+model SmmFile {
+  id          String   @id @default(cuid())
+  ownerType   String // "user" | "event"
+  ownerId     String // user id or event id (polymorphic, no FK — cleanup in service)
+  title       String
+  type        String   @default("link") // "audio" | "video" | "pdf" | "image" | "link"
+  url         String
+  size        Int?
+  tgMessageId Int?
+  orderNum    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@index([ownerType, ownerId, orderNum])
+}
+
+// Мероприятие — created by a CUSTOMER. Carries the full brief the brief
+// describes: what to cover, deadlines, payment, restrictions; the roles
+// (with their ТЗ templates) hang off it.
+model SmmEvent {
+  id           String   @id @default(cuid())
+  customerId   String
+  customer     User     @relation("SmmEventCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  title        String
+  summary      String   @default("") // краткое описание для карточки
+  brief        String   @default("") // полное ТЗ / описание мероприятия
+  deadline     String   @default("") // срок (текстом: «до 15 ноября»)
+  budget       String   @default("") // оплата
+  restrictions String   @default("") // ограничения и доп. условия
+  // Who is hiring: "business" (предприниматель) | "government" (государство)
+  kind         String   @default("business")
+  coverColor   String?
+  coverIcon    String?
+  isPublic     Boolean  @default(true)
+  status       String   @default("open") // "open" | "closed"
+  roles        SmmRole[]
+  invitations  SmmInvitation[]
+  applications SmmApplication[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([customerId, createdAt])
+  @@index([isPublic, createdAt, id])
+}
+
+// Роль в мероприятии — the customer's reusable ТЗ template. Specialists
+// apply (or are invited) for a concrete role.
+model SmmRole {
+  id       String   @id @default(cuid())
+  eventId  String
+  event    SmmEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name     String
+  brief    String   @default("") // ТЗ роли — the template text
+  payment  String   @default("")
+  deadline String   @default("")
+  orderNum Int      @default(0)
+  createdAt DateTime @default(now())
+  invitations SmmInvitation[]
+  applications SmmApplication[]
+
+  @@index([eventId, orderNum])
+}
+
+// Приглашение: the CUSTOMER invites a SPECIALIST to an event role
+// («Отправить SMM-специалисту приглашение» → роль → «Дополнительные
+// настройки» уникального ТЗ). Accepted = the event has the specialist
+// for that role.
+model SmmInvitation {
+  id           String   @id @default(cuid())
+  eventId      String
+  event        SmmEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  roleId       String
+  role         SmmRole  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  customerId   String
+  customer     User     @relation("SmmInvitationCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  specialistId String
+  specialist   User     @relation("SmmInvitationSpecialist", fields: [specialistId], references: [id], onDelete: Cascade)
+  message      String   @default("") // уникальное ТЗ из «Дополнительных настроек»
+  status       String   @default("pending") // pending | accepted | declined
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([specialistId, status])
+  @@index([eventId, status])
+}
+
+// Заявка: the SPECIALIST applies to an event role («Подать заявку» → роль →
+// уникальный текст заявки через «Дополнительные настройки»). The customer
+// accepts → the event gets the specialist for that role.
+model SmmApplication {
+  id           String   @id @default(cuid())
+  eventId      String
+  event        SmmEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  roleId       String
+  role         SmmRole  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  specialistId String
+  specialist   User     @relation("SmmApplicationSpecialist", fields: [specialistId], references: [id], onDelete: Cascade)
+  message      String   @default("")
+  status       String   @default("pending") // pending | accepted | declined
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([eventId, status])
+  @@index([specialistId, status])
+}
+
+// SMM personal library: a customer pins SPECIALISTS, a specialist pins
+// EVENTS. (Polymorphic — the test Bookmark table stays untouched.)
+model SmmBookmark {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetType String // "specialist" | "event"
+  targetId   String
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, targetType, targetId])
+  @@index([userId])
+}
+
+// Group chat about an SMM entity: an EVENT (participants discuss the offer)
+// or a SPECIALIST (users discuss the person's competence). Same polled
+// pattern as the per-test ChatMessage.
+model SmmChatMessage {
+  id        String   @id @default(cuid())
+  scopeType String // "event" | "specialist"
+  scopeId   String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userName  String
+  text      String
+  createdAt DateTime @default(now())
+
+  @@index([scopeType, scopeId, createdAt])
+}
+
 model TranslationCache {
   id        String   @id @default(cuid())
   hash      String // fnv1a(source)+len, same scheme the client used

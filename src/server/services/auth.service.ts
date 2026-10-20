@@ -15,14 +15,15 @@ import { ApiError } from "@/server/http/errors";
 
 const PUBLIC_USER_FIELDS = { id: true, email: true, name: true } as const;
 
-export type PublicUser = { id: string; email: string; name: string };
+export type PublicUser = { id: string; email: string; name: string; smmRole: string };
 
 export async function registerUser(input: {
   email: string;
   name: string;
   password: string;
+  smmRole?: string;
 }): Promise<PublicUser> {
-  const { email, name, password } = input;
+  const { email, name, password, smmRole } = input;
 
   const existing = await db.user.findUnique({ where: { email } });
   if (existing) {
@@ -38,6 +39,8 @@ export async function registerUser(input: {
         email,
         name,
         password: hashPassword(password),
+        // Account kind: «Заказчик» | «SMM-специалист» (validated by the schema)
+        ...(smmRole === "specialist" || smmRole === "customer" ? { smmRole } : {}),
       },
     });
   } catch (e) {
@@ -50,7 +53,7 @@ export async function registerUser(input: {
     throw e;
   }
 
-  return { id: user.id, email: user.email, name: user.name };
+  return { id: user.id, email: user.email, name: user.name, smmRole: user.smmRole };
 }
 
 export async function loginUser(input: {
@@ -79,5 +82,5 @@ export async function loginUser(input: {
       });
   }
 
-  return { id: user.id, email: user.email, name: user.name };
+  return { id: user.id, email: user.email, name: user.name, smmRole: user.smmRole };
 }

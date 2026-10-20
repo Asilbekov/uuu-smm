@@ -22,6 +22,8 @@ export const registerSchema = z.object({
     .regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "must be a valid email"),
   name: z.string().trim().min(1).max(60),
   password: z.string().min(6).max(100),
+  // SMM account kind — «Заказчик» | «SMM-специалист» picker at signup
+  smmRole: z.enum(["customer", "specialist"]).optional(),
 });
 
 export const loginSchema = z.object({
@@ -248,8 +250,104 @@ export const profileUpdateSchema = z.object({
   name: z.string().max(120).optional(),
   bgStyle: z.string().max(120).optional(),
   lang: z.enum(["en", "ru", "uz"]).optional(),
+  // SMM account kind — switchable in the profile page
+  smmRole: z.enum(["customer", "specialist"]).optional(),
 });
 
 export const interestsSchema = z.object({
   interests: z.unknown().optional(), // cleaned by sanitizeInterests in the service
+});
+
+// ------------------------------------------------------------------- smm ----
+// Registration accepts the account kind (заказчик | SMM-специалист);
+// it defaults to "customer" server-side when omitted.
+export const smmProfileSchema = z.object({
+  smmRole: z.enum(["customer", "specialist"]).optional(),
+  smmHeadline: z.string().max(120).optional(),
+  smmResume: z.string().max(8000).optional(),
+  // Presentation video — tg:/data:/https: reference, same rules as media everywhere
+  smmVideoUrl: z.string().max(11_000_000).nullish(),
+  smmCity: z.string().max(60).optional(),
+  smmRate: z.string().max(120).optional(),
+  smmReady: z.boolean().optional(),
+});
+
+export const smmRoleInputSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  brief: z.string().max(8000).optional(),
+  payment: z.string().max(120).optional(),
+  deadline: z.string().max(120).optional(),
+});
+
+export const smmEventCreateSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  summary: z.string().max(1000).optional(),
+  brief: z.string().max(20000).optional(),
+  deadline: z.string().max(120).optional(),
+  budget: z.string().max(120).optional(),
+  restrictions: z.string().max(2000).optional(),
+  kind: z.enum(["business", "government"]).optional(),
+  coverColor: z.string().max(40).nullish(),
+  coverIcon: z.string().max(40).nullish(),
+  isPublic: z.boolean().optional(),
+  roles: z.array(smmRoleInputSchema).max(50).optional(),
+});
+
+export const smmEventUpdateSchema = smmEventCreateSchema.partial().extend({
+  status: z.enum(["open", "closed"]).optional(),
+});
+
+export const smmRoleUpdateSchema = smmRoleInputSchema.partial();
+
+export const smmInvitationCreateSchema = z.object({
+  eventId: z.string().min(1).max(64),
+  roleId: z.string().min(1).max(64),
+  specialistId: z.string().min(1).max(64),
+  // Уникальное ТЗ из «Дополнительных настроек» — overrides the role template
+  message: z.string().max(8000).optional(),
+});
+
+export const smmApplicationCreateSchema = z.object({
+  eventId: z.string().min(1).max(64),
+  roleId: z.string().min(1).max(64),
+  // Уникальный текст заявки из «Дополнительных настроек»
+  message: z.string().max(8000).optional(),
+});
+
+export const smmRespondSchema = z.object({
+  action: z.enum(["accept", "decline"]),
+});
+
+export const smmBookmarkSchema = z.object({
+  targetType: z.enum(["specialist", "event"]),
+  targetId: z.string().min(1).max(64),
+});
+
+export const smmFileCreateSchema = z.object({
+  ownerType: z.enum(["user", "event"]),
+  ownerId: z.string().min(1).max(64),
+  title: z.string().max(200).optional(),
+  type: z.string().max(20).optional(),
+  url: z.string().max(11_000_000),
+  size: z.number().int().nullish(),
+  tgMessageId: z.number().int().nullish(),
+});
+
+export const smmChatSendSchema = z.object({
+  scopeType: z.enum(["event", "specialist"]),
+  scopeId: z.string().min(1).max(64),
+  text: z.string().min(1).max(2000),
+});
+
+export const smmAiChatSchema = z.object({
+  specialistId: z.string().min(1).max(64),
+  messages: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().max(8000),
+      })
+    )
+    .min(1)
+    .max(60),
 });

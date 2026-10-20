@@ -8,10 +8,10 @@ import type { TestNote, TreeNode } from '@/lib/app-types';
 
 const API_BASE = '/api';
 
-let currentUser: { id: string; email: string; name: string } | null = null;
+let currentUser: { id: string; email: string; name: string; smmRole?: string } | null = null;
 
 /** In-memory session cache ONLY — never persisted to the device. */
-export function setUser(user: { id: string; email: string; name: string } | null) {
+export function setUser(user: { id: string; email: string; name: string; smmRole?: string } | null) {
   currentUser = user;
 }
 
@@ -42,7 +42,7 @@ async function apiFetch(path: string, options: RequestInit = {}) {
 
 export const api = {
   // Auth
-  register: (data: { email: string; name: string; password: string }) =>
+  register: (data: { email: string; name: string; password: string; smmRole?: string }) =>
     apiFetch('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
   login: (data: { email: string; password: string }) =>
     apiFetch('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
@@ -52,6 +52,8 @@ export const api = {
   // Returns null (instead of throwing) for visitors without a live session.
   getSession: async (): Promise<{
     id: string; email: string; name: string; lang?: string; bgStyle?: string; image?: string | null;
+    smmRole?: string; smmHeadline?: string; smmResume?: string; smmVideoUrl?: string | null;
+    smmCity?: string; smmRate?: string; smmReady?: boolean;
   } | null> => {
     try {
       return await apiFetch('/me');
@@ -218,4 +220,53 @@ export const api = {
   // Persist on-the-fly question translations (machine-translated in the browser)
   saveTranslations: (testId: string, lang: string, items: { id: string; text?: string; options?: Record<string, string>; explanation?: string }[]) =>
     apiFetch(`/tests/${testId}/translations`, { method: 'POST', body: JSON.stringify({ lang, items }) }),
+
+  // ─── SMM marketplace ─────────────────────────────────────────────────────
+  // Role-aware feed: a customer browses SPECIALISTS, a specialist EVENTS.
+  getSmmFeed: (params: { scope?: 'mine' | 'discover'; limit?: number }) =>
+    apiFetch(`/smm/feed?${new URLSearchParams({
+      ...(params.scope ? { scope: params.scope } : {}),
+      ...(params.limit ? { limit: String(params.limit) } : {}),
+    })}`) as Promise<{ kind: 'specialists' | 'events'; items: any[] }>,
+  getSmmProfile: () => apiFetch('/smm/profile'),
+  updateSmmProfile: (data: { smmRole?: string; smmHeadline?: string; smmResume?: string; smmVideoUrl?: string | null; smmCity?: string; smmRate?: string; smmReady?: boolean }) =>
+    apiFetch('/smm/profile', { method: 'PUT', body: JSON.stringify(data) }),
+  getSmmFiles: (ownerType: 'user' | 'event', ownerId: string) =>
+    apiFetch(`/smm/files?ownerType=${ownerType}&ownerId=${encodeURIComponent(ownerId)}`) as Promise<any[]>,
+  addSmmFile: (data: { ownerType: 'user' | 'event'; ownerId: string; title?: string; type?: string; url: string; size?: number | null; tgMessageId?: number | null }) =>
+    apiFetch('/smm/files', { method: 'POST', body: JSON.stringify(data) }),
+  deleteSmmFile: (id: string) => apiFetch(`/smm/files/${id}`, { method: 'DELETE' }),
+  getMySmmEvents: () => apiFetch('/smm/events') as Promise<any[]>,
+  getSmmEvent: (id: string) => apiFetch(`/smm/events/${id}`) as Promise<any>,
+  createSmmEvent: (data: any) => apiFetch('/smm/events', { method: 'POST', body: JSON.stringify(data) }),
+  updateSmmEvent: (id: string, data: any) => apiFetch(`/smm/events/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteSmmEvent: (id: string) => apiFetch(`/smm/events/${id}`, { method: 'DELETE' }),
+  addSmmRole: (eventId: string, data: { name: string; brief?: string; payment?: string; deadline?: string }) =>
+    apiFetch(`/smm/events/${eventId}/roles`, { method: 'POST', body: JSON.stringify(data) }),
+  updateSmmRole: (id: string, data: any) => apiFetch(`/smm/roles/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteSmmRole: (id: string) => apiFetch(`/smm/roles/${id}`, { method: 'DELETE' }),
+  getSmmInvitations: (box: 'sent' | 'inbox') => apiFetch(`/smm/invitations?box=${box}`) as Promise<any[]>,
+  createSmmInvitation: (data: { eventId: string; roleId: string; specialistId: string; message?: string }) =>
+    apiFetch('/smm/invitations', { method: 'POST', body: JSON.stringify(data) }),
+  respondSmmInvitation: (id: string, action: 'accept' | 'decline') =>
+    apiFetch(`/smm/invitations/${id}/respond`, { method: 'POST', body: JSON.stringify({ action }) }),
+  getSmmApplications: (box: 'inbox' | 'sent') => apiFetch(`/smm/applications?box=${box}`) as Promise<any[]>,
+  createSmmApplication: (data: { eventId: string; roleId: string; message?: string }) =>
+    apiFetch('/smm/applications', { method: 'POST', body: JSON.stringify(data) }),
+  respondSmmApplication: (id: string, action: 'accept' | 'decline') =>
+    apiFetch(`/smm/applications/${id}/respond`, { method: 'POST', body: JSON.stringify({ action }) }),
+  getSmmBookmarks: (targetType?: 'specialist' | 'event') =>
+    apiFetch(`/smm/bookmarks${targetType ? `?targetType=${targetType}` : ''}`) as Promise<{ ids: string[]; pairs: { targetType: string; targetId: string }[] }>,
+  addSmmBookmark: (targetType: 'specialist' | 'event', targetId: string) =>
+    apiFetch('/smm/bookmarks', { method: 'POST', body: JSON.stringify({ targetType, targetId }) }),
+  removeSmmBookmark: (targetType: 'specialist' | 'event', targetId: string) =>
+    apiFetch(`/smm/bookmarks?targetType=${targetType}&targetId=${encodeURIComponent(targetId)}`, { method: 'DELETE' }),
+  // SMM group chat (about an event / a specialist)
+  getSmmMessages: (scopeType: 'event' | 'specialist', scopeId: string, after?: string) =>
+    apiFetch(`/smm/chat?scopeType=${scopeType}&scopeId=${encodeURIComponent(scopeId)}${after ? `&after=${encodeURIComponent(after)}` : ''}`),
+  sendSmmMessage: (scopeType: 'event' | 'specialist', scopeId: string, text: string) =>
+    apiFetch('/smm/chat', { method: 'POST', body: JSON.stringify({ scopeType, scopeId, text }) }),
+  // AI chat about a SPECIALIST (the customer's research window)
+  chatAboutSpecialist: (specialistId: string, messages: { role: 'user' | 'assistant'; content: string }[]) =>
+    apiFetch('/smm/ai-chat', { method: 'POST', body: JSON.stringify({ specialistId, messages }) }) as Promise<{ response?: string; rateLimited?: boolean; error?: string }>,
 };

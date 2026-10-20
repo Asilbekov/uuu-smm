@@ -124,6 +124,17 @@ import {
   TreeDeciduous,
   Ban,
   GitBranch,
+  Bell,
+  Briefcase,
+  Building2,
+  Banknote,
+  CalendarClock,
+  Landmark,
+  MapPin,
+  Megaphone,
+  ShieldAlert,
+  UserPlus,
+  Video,
 } from 'lucide-react';
 import { VersionNameSheet } from '@/components/version-name-sheet';
 const PhotoshopColorPicker = dynamic(() => import('@/components/color-picker').then(m => m.PhotoshopColorPicker), { ssr: false });
@@ -136,6 +147,10 @@ import StartTestView from '@/components/pages/start-test-view';
 import TakeTestView from '@/components/pages/take-test-view';
 import DashboardView from '@/components/pages/dashboard-view';
 import type { FeedApi } from '@/components/pages/dashboard-view';
+import SmmWizardView from '@/components/pages/smm-wizard-view';
+import SmmEventsView from '@/components/pages/smm-events-view';
+import SmmInboxView from '@/components/pages/smm-inbox-view';
+import { useSmmStore, smmNow } from '@/stores/smm-store';
 import CreateEditView from '@/components/pages/create-edit-view';
 import LangButton from '@/components/lang-button';
 import { CreatorStrip, TranslatingPill, topicBgClass, tagHash, coverBgFor, imgSrc, GLASS_TILE } from '@/components/shared-bits';
@@ -676,6 +691,35 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
   // phone — identity, language, avatar and history all come from the network.
   const hydratedUser = useSessionStore(s => s.hydratedUser);
   const setHydratedUser = useSessionStore(s => s.setHydratedUser);
+
+  // ─── SMM MARKETPLACE ────────────────────────────────────────────────────
+  // The role-aware feed (customer → specialists / specialist → events),
+  // the wizard bindings and the SMM bookmark cache. See smm-store.ts.
+  const [smmFeed, setSmmFeed] = useState<{ kind: 'specialists' | 'events'; items: any[] }>({ kind: 'specialists', items: [] });
+  const [smmLoading, setSmmLoading] = useState(false);
+  const wizardBusy = useSmmStore(s => s.wizardBusy);
+  const smmBmSpecialists = useSmmStore(s => s.smmBmSpecialists);
+  const smmBmEvents = useSmmStore(s => s.smmBmEvents);
+  const refreshSmmFeed = useCallback(async (scopeOverride?: 'mine' | 'discover') => {
+    const st = useSessionStore.getState();
+    const uid = st.user?.id || st.hydratedUser?.id;
+    if (!uid) return;
+    const scope = scopeOverride || (navNow().discoverMode ? 'discover' : 'mine');
+    setSmmLoading(true);
+    try {
+      const feed = await api.getSmmFeed({ scope, limit: 30 });
+      setSmmFeed({ kind: feed.kind, items: feed.items || [] });
+    } catch { /* transient */ }
+    setSmmLoading(false);
+  }, []);
+  const loadSmmBookmarks = useCallback(() => {
+    api.getSmmBookmarks().then(r => {
+      const st = useSmmStore.getState();
+      st.setSmmBmSpecialists(r.pairs.filter(p => p.targetType === 'specialist').map(p => p.targetId));
+      st.setSmmBmEvents(r.pairs.filter(p => p.targetType === 'event').map(p => p.targetId));
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     void (async () => {
       const me = await api.getSession();
@@ -695,8 +739,10 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
         setDataReady(true);
         return;
       }
-      setUser(me); // in-memory session cache only
-      setHydratedUser(me);
+      // Normalize the SMM account kind (string → union) for the session store
+      const meNorm = { ...me, smmRole: (me.smmRole === 'specialist' ? 'specialist' : 'customer') as 'customer' | 'specialist' };
+      setUser(meNorm); // in-memory session cache only
+      setHydratedUser(meNorm);
       // Interface language: DB first (User.lang), then the pre-DB device
       // choice (one-time migration), then browser detection. The picked
       // language is PERSISTED TO THE DB, never to the device.
@@ -725,6 +771,10 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
       if (me.image && me.image.startsWith('data:')) setMyAvatar(me.image);
       if (typeof me.bgStyle === 'string') setMyBgStyle(me.bgStyle);
       setProfileName(me.name);
+      // SMM boot: the bookmark cache + the role-aware feed (background —
+      // the dashboard skeleton paints first, the SMM slides fill in after)
+      loadSmmBookmarks();
+      refreshSmmFeed();
       bindProgressFlush();
       // === Stale-while-revalidate boot (TikTok-speed first paint) ===
       // The server HTML already painted the full dashboard shell; within a
@@ -768,6 +818,15 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
   // login via the mount effect below).
   const landingPage = !mounted && authed && page === 'auth' ? 'dashboard' : page;
   const effectivePage = landingPage === 'auth' && mounted && hydratedUser ? 'dashboard' : landingPage;
+
+  // The SMM account kind drives the dashboard feed kind + the dock button
+  const mySmmRole = effectiveUser?.smmRole || 'customer';
+  // The SMM feed follows the dashboard scope (personal ↔ discover)
+  useEffect(() => {
+    if (!effectiveUser || effectivePage !== 'dashboard') return;
+    refreshSmmFeed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [discoverMode, effectiveUser?.id]);
 
   // Persist the interface language to the DATABASE on every change the USER
   // makes (the cycle button). The value applied during boot is consumed via
@@ -1330,13 +1389,16 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     try {
       let result;
       if (authMode === 'signup') {
-        result = await api.register({ email, name, password });
+        result = await api.register({ email, name, password, smmRole: useSessionStore.getState().smmRole });
       } else {
         result = await api.login({ email, password });
       }
       setUser(result);
       setUserState(result);
       setHydratedUser(result);
+      // SMM: fresh session → the bookmark cache + the role-aware feed
+      loadSmmBookmarks();
+      refreshSmmFeed();
       // The login/register response already set the httpOnly session cookie
       // (DB-backed) — the next visit pre-renders the dashboard shell.
       // Professional fresh-session boot: prefetch of the personal feed BEFORE
@@ -2598,6 +2660,10 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
   // carries the COUNT) and open the files window — the AI-window format.
   const openCardFiles = (test: any) => {
     if (!test?.id || dashFilesLoadingId === String(test.id)) return;
+    // SMM entity (event «smm-e:<id>» / specialist «smm-u:<id>»)? Their files
+    // live in the polymorphic SmmFile table — the same window, another source.
+    const smmKind0 = String(test.id).startsWith('smm-e:') ? 'event' : String(test.id).startsWith('smm-u:') ? 'specialist' : null;
+    if (smmKind0) { return openSmmFiles(smmKind0 as 'event' | 'specialist', test); }
     setAiCardTestId(null); // one dashboard window at a time
     setDashGroupTestId(null); // ...the group chat window yields too
     stashDashWindowTest(test);
@@ -2626,6 +2692,11 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
   // account, the same rule the taking screen's chat button follows.
   const openCardGroupChat = (test: any) => {
     if (!test?.id) return;
+    // SMM entity? The chat scope is the event / the specialist, not a test.
+    const gid0 = String(test.id);
+    if (gid0.startsWith('smm-e:') || gid0.startsWith('smm-u:')) {
+      return openSmmGroupChat(gid0.startsWith('smm-e:') ? 'event' : 'specialist', test);
+    }
     // setRegisterWall directly — the `wall` helper lives below the dashboard
     // early-return, so referencing it here would trip the TDZ on click.
     if (isGuestNow()) { setRegisterWall('chat'); return; }
@@ -2643,6 +2714,116 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     setGroupMessages([]);
     setGroupInput('');
   };
+
+  // ─── SMM openers ────────────────────────────────────────────────────────
+  // Group chat about an SMM entity: the SAME window + polling as the per-test
+  // chat, keyed by the «smm-e:<id>» / «smm-u:<id>» scope prefix.
+  const openSmmGroupChat = (kind: 'event' | 'specialist', entity: any) => {
+    if (isGuestNow()) { setRegisterWall('chat'); return; }
+    setAiCardTestId(null);
+    setDashFilesOpen(false);
+    setEditOpen(false);
+    setGroupMessages([]);
+    setGroupInput('');
+    dashGroupTitleRef.current = kind === 'event' ? String(entity?.title || '') : String(entity?.name || '');
+    stashDashWindowTest({ ...entity, smmKind: kind });
+    setDashGroupTestId(`smm-${kind === 'event' ? 'e' : 'u'}:${entity.id}`);
+  };
+  // Files of an SMM entity (the polymorphic SmmFile table) — the SAME window
+  // format as the test files window.
+  const openSmmFiles = (kind: 'event' | 'specialist', entity: any) => {
+    const raw = String(entity?.id || '');
+    const rawId = raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw;
+    if (!rawId) return;
+    setAiCardTestId(null);
+    setDashGroupTestId(null);
+    stashDashWindowTest({ ...entity, smmKind: kind });
+    const title = kind === 'event' ? String(entity?.title || '') : String(entity?.name || '');
+    setDashFilesLoadingId(rawId);
+    setLoading(true);
+    api.getSmmFiles(kind === 'event' ? 'event' : 'user', rawId)
+      .then((items: any[]) => {
+        setDashFiles({ testId: `smm-${kind === 'event' ? 'e' : 'u'}:${rawId}`, title, items: (items || []).filter(Boolean) });
+        setDashFilesOpen(true);
+      })
+      .catch((e: any) => toast({ title: t('error'), description: e?.message || 'Error', variant: 'destructive' }))
+      .finally(() => { setDashFilesLoadingId(null); setLoading(false); });
+  };
+  // «Подать заявку» (specialist → event) / «Пригласить» (customer →
+  // specialist): the wizard in the same full-screen window the question
+  // cards used. invite preloads the customer's own events for the pick.
+  const openSmmWizard = async (mode: 'invite' | 'apply', target: any) => {
+    if (isGuestNow()) { setRegisterWall('home'); return; }
+    const st = useSmmStore.getState();
+    st.setWizardMode(mode);
+    st.setWizardSpecialist(mode === 'invite' ? target : null);
+    st.setWizardEvent(mode === 'apply' ? target : null);
+    st.setSelEventId(null);
+    st.setSelRoleId(null);
+    st.setWizardMessage('');
+    st.setWizardStep(0);
+    st.setWizardBusy(false);
+    if (mode === 'invite') {
+      try {
+        const evs = await api.getMySmmEvents();
+        st.setMyEvents(evs || []);
+        if ((evs || []).length === 1) st.setSelEventId(evs[0].id);
+      } catch { st.setMyEvents([]); }
+    }
+    setPage('smm-wizard');
+  };
+  // Personal-library pin for SMM entities (customer pins specialists,
+  // specialist pins events) — optimistic, like the test bookmarks.
+  const toggleSmmBookmark = async (kind: 'specialist' | 'event', id: string) => {
+    if (isGuestNow()) { setRegisterWall('home'); return; }
+    const st = useSmmStore.getState();
+    const curList = kind === 'specialist' ? st.smmBmSpecialists : st.smmBmEvents;
+    const has = curList.includes(id);
+    const nextList = has ? curList.filter(x => x !== id) : [...curList, id];
+    if (kind === 'specialist') st.setSmmBmSpecialists(nextList); else st.setSmmBmEvents(nextList);
+    try {
+      if (has) await api.removeSmmBookmark(kind, id);
+      else await api.addSmmBookmark(kind, id);
+      if (!navNow().discoverMode) refreshSmmFeed('mine');
+    } catch (e: any) {
+      if (kind === 'specialist') st.setSmmBmSpecialists(curList); else st.setSmmBmEvents(curList);
+      toast({ title: t('error'), description: e?.message || 'Error', variant: 'destructive' });
+    }
+  };
+  // Wizard confirmation («Подтвердить»): send the invitation / application →
+  // back to the feed — the ending the brief describes.
+  const confirmSmmWizard = async () => {
+    const st = smmNow();
+    if (st.wizardBusy) return;
+    if (st.wizardMode === 'invite') {
+      if (!st.selEventId || !st.selRoleId || !st.wizardSpecialist) return;
+    } else {
+      if (!st.wizardEvent?.id || !st.selRoleId) return;
+    }
+    st.setWizardBusy(true);
+    try {
+      if (st.wizardMode === 'invite') {
+        await api.createSmmInvitation({ eventId: st.selEventId!, roleId: st.selRoleId!, specialistId: st.wizardSpecialist!.id, message: st.wizardMessage });
+        toast({ title: t('smmInviteSentTitle'), description: t('smmInviteSentDesc') });
+      } else {
+        await api.createSmmApplication({ eventId: st.wizardEvent!.id, roleId: st.selRoleId!, message: st.wizardMessage });
+        toast({ title: t('smmApplicationSentTitle'), description: t('smmApplicationSentDesc') });
+      }
+      st.setWizardMode(null);
+      st.setWizardSpecialist(null);
+      st.setWizardEvent(null);
+      st.setSelEventId(null);
+      st.setSelRoleId(null);
+      st.setWizardMessage('');
+      st.setWizardStep(0);
+      setPage('dashboard');
+      refreshSmmFeed();
+    } catch (e: any) {
+      toast({ title: t('error'), description: e?.message || 'Error', variant: 'destructive' });
+    }
+    st.setWizardBusy(false);
+  };
+  const gotoSmmPage = (p: 'smm-events' | 'smm-inbox') => setPage(p);
   // The window's open effect: resume the test's most recent thread — or
   // spawn a fresh (empty, unsaved) one, «Новый чат» style. No passport.
   React.useEffect(() => {
@@ -2706,7 +2887,11 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     }
     setChatLoading(true);
     try {
-      const result = await api.chatAboutTest(testId, newMsgs);
+      // SMM specialist thread («smm-u:<id>»)? The AI prompt is built from the
+      // person's анкета server-side; otherwise it's the whole-test tutor.
+      const result = String(testId).startsWith('smm-u:')
+        ? await api.chatAboutSpecialist(String(testId).slice(5), newMsgs)
+        : await api.chatAboutTest(testId, newMsgs);
       if (result.response) {
         const assistantMsg = { role: 'assistant' as const, content: result.response };
         const finalMsgs = [...newMsgs, assistantMsg];
@@ -2821,13 +3006,18 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
   }, [groupOpen, currentTest]);
 
   // Dashboard group chat window: the SAME serverless-safe polling, keyed on
-  // the card's test instead of the taking screen's one.
+  // the card's test instead of the taking screen's one. SMM entities (the
+  // «smm-e:» / «smm-u:» prefixes) poll the polymorphic SMM chat instead.
   useEffect(() => {
     if (!dashGroupTestId) return;
+    const smmScope: 'event' | 'specialist' | null = dashGroupTestId.startsWith('smm-e:') ? 'event' : dashGroupTestId.startsWith('smm-u:') ? 'specialist' : null;
+    const smmScopeId = smmScope ? dashGroupTestId.slice(dashGroupTestId.indexOf(':') + 1) : '';
     let stop = false;
     const poll = async () => {
       try {
-        const msgs = await api.getGroupMessages(dashGroupTestId);
+        const msgs = smmScope
+          ? await api.getSmmMessages(smmScope, smmScopeId)
+          : await api.getGroupMessages(dashGroupTestId);
         if (!stop && Array.isArray(msgs)) setGroupMessages(msgs);
       } catch { /* transient network errors are fine — next tick retries */ }
     };
@@ -2866,7 +3056,10 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     setGroupInput('');
     setGroupSending(true);
     try {
-      const saved = await api.sendGroupMessage(dashGroupTestId, text);
+      const smmScope: 'event' | 'specialist' | null = dashGroupTestId.startsWith('smm-e:') ? 'event' : dashGroupTestId.startsWith('smm-u:') ? 'specialist' : null;
+      const saved = smmScope
+        ? await api.sendSmmMessage(smmScope, dashGroupTestId.slice(dashGroupTestId.indexOf(':') + 1), text)
+        : await api.sendGroupMessage(dashGroupTestId, text);
       setGroupMessages(prev => (prev.some(m => m.id === saved.id) ? prev : [...prev, saved]));
     } catch (e: any) {
       toast({ title: 'Error', description: e.message || 'Failed to send message', variant: 'destructive' });
@@ -3907,10 +4100,18 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     }] : []),
     { key: 'ai', label: t('aiTutor'), icon: <MessageSquare className="w-3.5 h-3.5" />, active: !!aiCardTestId },
     { key: 'group' as const, label: t('chat'), icon: <MessageCircle className="w-3.5 h-3.5" />, active: !!dashGroupTestId },
-    { key: 'edit' as const, label: t('editTest'), icon: <Pencil className="w-3.5 h-3.5" />, active: editOpen },
+    // «Изменить» — TEST-only: SMM windows (event / specialist) never offer it
+    ...(((dashWindowTestRef.current as any)?.smmKind) ? [] : [{
+      key: 'edit' as const,
+      label: t('editTest'),
+      icon: <Pencil className="w-3.5 h-3.5" />,
+      active: editOpen,
+    }]),
   ];
   const dashSwitcher = { options: dashSheetOptions, onSelect: (key: string) => {
     if (key === 'edit') {
+      // SMM entities have no editor (the brief: no «Изменить» on SMM cards)
+      if ((dashWindowTestRef.current as any)?.smmKind) return;
       // the edit window for the SAME test the switcher lives on — the stashed
       // card test keeps the creatorId for the copy-on-edit path
       setDashFilesOpen(false);
@@ -3965,6 +4166,14 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
           openFilesCard={openFilesCard}
           cycleDashView={cycleDashView}
           toggleDiscoverMode={toggleDiscoverMode}
+          smmFeed={smmFeed}
+          smmLoading={smmLoading}
+          smmBmSpecialists={smmBmSpecialists}
+          smmBmEvents={smmBmEvents}
+          mySmmRole={mySmmRole}
+          openSmmWizard={openSmmWizard}
+          toggleSmmBookmark={toggleSmmBookmark}
+          gotoSmmPage={gotoSmmPage}
         />
         {/* THE DASHBOARD AI WINDOW — «Обсудить с ИИ»: opens STRAIGHT INTO the
         conversation (the test's most recent thread, or a fresh one); the AI
@@ -4150,6 +4359,28 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
         goHome={goHome}
       />
     );
+  }
+
+  // SMM WIZARD — «Подать заявку / Пригласить» in the same full-screen window
+  // the question cards used: stages as slides, the bottom panel switches and
+  // confirms, the review is the swipeable results-style run of cards.
+  if (effectivePage === 'smm-wizard' && smmNow().wizardMode) {
+    return (
+      <SmmWizardView
+        goHome={() => setPage('dashboard')}
+        onConfirm={confirmSmmWizard}
+        onCreateEvent={() => setPage('smm-events')}
+      />
+    );
+  }
+  // SMM EVENTS — the customer's events manager: the brief, the roles tab
+  // (ТЗ templates + assigned specialists), applications and invitations.
+  if (effectivePage === 'smm-events') {
+    return <SmmEventsView goHome={() => setPage('dashboard')} />;
+  }
+  // SMM INBOX — the specialist's invitations + application statuses.
+  if (effectivePage === 'smm-inbox') {
+    return <SmmInboxView goHome={() => setPage('dashboard')} />;
   }
 
   // TAKE TEST + RESULTS (view extracted to src/components/pages/take-test-view.tsx)
