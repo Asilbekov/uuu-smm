@@ -334,6 +334,9 @@ export default function DashboardView({
   const smmActive = !!effectiveUser && !viewingUser && !filesFeedMode && !treeFeedMode && (dashView === 'tiktok1' || dashView === 'tiktok2');
   const smmLen = smmActive ? smmFeed.items.length : 0;
   const curSmmItem: any = smmActive ? smmFeed.items[Math.min(Math.max(0, dashTestIdx), Math.max(0, smmLen - 1))] : null;
+  // The ACTIVE list length drives the skeleton/empty branches: in SMM mode
+  // the tests list may be empty while the specialist/event feed has cards.
+  const activeLen = smmActive ? smmLen : tests.length;
   // Saved progress ("Continue Test") for the card on screen — loaded from the
   // DATABASE (SavedProgress table) whenever the visible card changes. The
   // clear-on-switch keeps a stale "Continue N answers" button from ever
@@ -1074,13 +1077,13 @@ export default function DashboardView({
           </div>
         </header>
 
-        {tests.length === 0 && viewingLoading ? (
+        {activeLen === 0 && viewingLoading ? (
           <main className="flex-1 min-h-0 flex items-center justify-center">
             <p className="text-sm text-muted-foreground flex items-center gap-2">
               <Loader2 className="w-4 h-4 animate-spin" /> {t('loading')}
             </p>
           </main>
-        ) : tests.length === 0 && (loading || feedLoading || !dataReady) ? (
+        ) : activeLen === 0 && (loading || feedLoading || smmLoading || !dataReady) ? (
           /* FIRST-DATA SKELETON — a stable placeholder shaped like a feed card.
              The server HTML already shows it, so a returning user never sees
              an empty screen, a splash or a "no tests" flash: cached (or fresh)
@@ -1099,7 +1102,19 @@ export default function DashboardView({
               <Skeleton className="h-9 w-1/2 mx-auto rounded-full" />
             </div>
           </main>
-        ) : tests.length === 0 ? (
+        ) : activeLen === 0 ? (
+          smmActive ? (
+            /* SMM empty state — the feed kind speaks for itself (no tests
+            CTA here: the events/invitations pages carry the creation flows) */
+            <main className="flex-1 min-h-0 flex items-center justify-center px-4">
+              <Card className="rounded-4xl border-dashed border-black/30 bg-white w-full max-w-md">
+                <CardContent className="py-12 text-center">
+                  {mySmmRole === 'customer' ? <Megaphone className="w-12 h-12 mx-auto text-muted-foreground mb-4" /> : <Briefcase className="w-12 h-12 mx-auto text-muted-foreground mb-4" />}
+                  <p className="text-muted-foreground">{mySmmRole === 'customer' ? t('smmEmptySpecialists') : t('smmEmptyEvents')}</p>
+                </CardContent>
+              </Card>
+            </main>
+          ) : (
           <main className="flex-1 min-h-0 overflow-y-auto">
             <div className="max-w-7xl mx-auto px-4 py-6">
               <Card className="rounded-4xl border-dashed border-black/30 bg-white">
@@ -1125,6 +1140,7 @@ export default function DashboardView({
               </Card>
             </div>
           </main>
+          )
         ) : (
           <>
             {/* LIBRARY / SHELF views — endless shelves, 3 per screen, scrolling down.
