@@ -97,17 +97,24 @@ export async function getSmmFeed(userId: string, scope: "mine" | "discover", lim
       select: {
         id: true, title: true, summary: true, brief: true, deadline: true,
         budget: true, restrictions: true, kind: true, coverColor: true,
-        coverIcon: true, status: true, createdAt: true,
+        coverIcon: true, status: true, createdAt: true, customerId: true,
         customer: { select: { id: true, name: true, image: true } },
         roles: { orderBy: { orderNum: "asc" }, select: { id: true, name: true, brief: true, payment: true, deadline: true } },
         _count: { select: { applications: true } },
       },
     });
-    const fileCounts = await db.smmFile.groupBy({
-      by: ["ownerId"],
-      where: { ownerType: "event", ownerId: { in: events.map(e => e.id) } },
-      _count: { _all: true },
-    });
+    const [fileCounts, others] = await Promise.all([
+      db.smmFile.groupBy({
+        by: ["ownerId"],
+        where: { ownerType: "event", ownerId: { in: events.map(e => e.id) } },
+        _count: { _all: true },
+      }),
+      // «Какие ещё мероприятия у этого заказчика есть» — публичные события
+      // создателей этой ленты (бриф: специалист видит, кто создал мероприятие
+      // и что ещё у него открыто). Соседей ленты НЕ исключаем — каждое событие
+      // показывает портфель мероприятий своего заказчика.
+      customerOtherEvents([...new Set(events.map(e => e.customerId))], []),
+    ]);
     const fcMap = new Map(fileCounts.map(f => [f.ownerId, f._count._all]));
     return {
       kind: "events" as const,
@@ -115,6 +122,7 @@ export async function getSmmFeed(userId: string, scope: "mine" | "discover", lim
         ...e,
         filesCount: fcMap.get(e.id) || 0,
         applicationsCount: e._count.applications,
+        customerOtherEvents: others.get(e.customerId) || [],
         _count: undefined,
       })),
     };
@@ -151,6 +159,25 @@ export async function getSmmFeed(userId: string, scope: "mine" | "discover", lim
 const EVENT_ROLES_SELECT = {
   id: true, name: true, brief: true, payment: true, deadline: true, orderNum: true,
 } as const;
+
+// Per customer: their other PUBLIC OPEN events (max 5) — the specialist sees
+// who created the event AND what else that customer runs (brief requirement).
+type OtherEvent = { id: string; title: string; summary: string | null; kind: string | null; rolesCount: number };
+async function customerOtherEvents(customerIds: string[], excludeIds: string[]) {
+  const map = new Map<string, OtherEvent[]>();
+  if (!customerIds.length) return map;
+  const rows = await db.smmEvent.findMany({
+    where: { customerId: { in: customerIds }, isPublic: true, status: "open", id: { notIn: excludeIds } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, title: true, summary: true, kind: true, customerId: true, _count: { select: { roles: true } } },
+  });
+  for (const r of rows) {
+    const list = map.get(r.customerId) || [];
+    if (list.length < 5) list.push({ id: r.id, title: r.title, summary: r.summary, kind: r.kind, rolesCount: r._count.roles });
+    map.set(r.customerId, list);
+  }
+  return map;
+}
 
 export async function listMyEvents(userId: string) {
   const events = await db.smmEvent.findMany({
@@ -207,16 +234,20 @@ export async function getEventDetail(eventId: string, userId?: string) {
     }
     assigned.set(r.roleId, list);
   }
-  const files = await db.smmFile.findMany({
-    where: { ownerType: "event", ownerId: eventId },
-    orderBy: { orderNum: "asc" },
-    select: { id: true, title: true, type: true, url: true, size: true, tgMessageId: true, orderNum: true, createdAt: true },
-  });
+  const [files, others] = await Promise.all([
+    db.smmFile.findMany({
+      where: { ownerType: "event", ownerId: eventId },
+      orderBy: { orderNum: "asc" },
+      select: { id: true, title: true, type: true, url: true, size: true, tgMessageId: true, orderNum: true, createdAt: true },
+    }),
+    customerOtherEvents([ev.customerId], [eventId]),
+  ]);
   const isOwner = !!userId && userId === ev.customerId;
   return {
     ...ev,
     isOwner,
     files,
+    customerOtherEvents: others.get(ev.customerId) || [],
     roles: ev.roles.map(r => ({ ...r, assigned: assigned.get(r.id) || [] })),
   };
 }

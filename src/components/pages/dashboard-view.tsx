@@ -1511,6 +1511,18 @@ export default function DashboardView({
                                   {(ev.roles || []).length > 3 && <p className="text-[11px] text-muted-foreground">{t('smmRolesN', { n: (ev.roles || []).length })}</p>}
                                 </div>
                               )}
+                              {(ev.customerOtherEvents || []).length > 0 && (
+                                <div className="space-y-1 border-t border-black/5 pt-1.5">
+                                  <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">{t('smmOtherEvents')}</p>
+                                  {(ev.customerOtherEvents || []).map((o: any) => (
+                                    <div key={o.id} className="flex items-center gap-1.5 text-xs">
+                                      <Building2 className="w-3 h-3 text-muted-foreground shrink-0" />
+                                      <span className="font-semibold truncate">{o.title}</span>
+                                      <span className="text-muted-foreground shrink-0">· {t('smmRolesN', { n: o.rolesCount })}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                             {!editMode && (
                               <>

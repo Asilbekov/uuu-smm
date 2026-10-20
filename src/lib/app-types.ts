@@ -175,6 +175,9 @@ export interface SmmEventItem {
   createdAt?: string;
   customerId?: string;
   customer?: { id: string; name: string; image: string | null } | null;
+  // Other public open events of the SAME customer (the brief: the specialist
+  // sees who created the event and what else that customer runs)
+  customerOtherEvents?: { id: string; title: string; summary?: string | null; kind?: string | null; rolesCount: number }[];
   roles?: SmmRoleItem[];
   filesCount?: number;
   applicationsCount?: number;
