@@ -24,6 +24,7 @@ const PhotoshopColorPicker = dynamic(() => import('@/components/color-picker').t
 
 import type { Page, Test, TreeNode } from '@/lib/app-types';
 import { CreatorStrip, TranslatingPill, topicBgClass, tagHash, coverBgFor, imgSrc, GLASS_TILE } from '@/components/shared-bits';
+import SmmEventSlide from '@/components/pages/smm-event-slide';
 import { smmCoverColor } from '@/lib/smm-client';
 import { testBackgroundCss } from '@/lib/test-bg';
 import { useExitMount } from '@/components/motion';
@@ -331,12 +332,11 @@ export default function DashboardView({
   // The dashboard feed swaps to the SMM content kind: a customer browses
   // SPECIALISTS, a specialist browses EVENTS (the brief's «лента анкет»).
   // Grid views (library/shelf) and the files/tree flows keep the tests.
+  // smmActive = the SMM marketplace feed replaces the tests TikTok feed for
+  // an SMM account. Deliberately TIKTOK-ONLY: the library/shelf grid views
+  // keep the full TESTS ladder (the frozen brief — the tests site stays
+  // intact); the events page carries its own view kinds over EVENT cards.
   const smmActive = !!effectiveUser && !viewingUser && !filesFeedMode && !treeFeedMode && (dashView === 'tiktok1' || dashView === 'tiktok2');
-  const smmLen = smmActive ? smmFeed.items.length : 0;
-  const curSmmItem: any = smmActive ? smmFeed.items[Math.min(Math.max(0, dashTestIdx), Math.max(0, smmLen - 1))] : null;
-  // The ACTIVE list length drives the skeleton/empty branches: in SMM mode
-  // the tests list may be empty while the specialist/event feed has cards.
-  const activeLen = smmActive ? smmLen : tests.length;
   // Saved progress ("Continue Test") for the card on screen — loaded from the
   // DATABASE (SavedProgress table) whenever the visible card changes. The
   // clear-on-switch keeps a stale "Continue N answers" button from ever
@@ -359,6 +359,24 @@ export default function DashboardView({
   const libWide = useDashboardStore(s => s.libWide);
   const libUltra = useDashboardStore(s => s.libUltra);
   const dashSearch = useDashboardStore(s => s.dashSearch);
+  // SMM search — the top-panel search filters the SMM feed LOCALLY (name /
+  // headline / summary / roles / city) while the feed is active; over the
+  // tests grids the server tag search applies as before.
+  const smmQuery = dashSearch.trim().toLowerCase();
+  const visibleSmmItems = React.useMemo(() => {
+    if (!smmActive || !smmQuery) return smmFeed.items;
+    return (smmFeed.items as any[]).filter(it => {
+      const hay = smmFeed.kind === 'events'
+        ? [it.title, it.summary, it.brief, it.customer?.name, ...(it.roles || []).map((r: any) => r.name)]
+        : [it.name, it.headline, it.resume, it.city, it.rate];
+      return hay.filter(Boolean).join(' ').toLowerCase().includes(smmQuery);
+    });
+  }, [smmActive, smmQuery, smmFeed]);
+  const smmLen = smmActive ? visibleSmmItems.length : 0;
+  const curSmmItem: any = smmActive ? visibleSmmItems[Math.min(Math.max(0, dashTestIdx), Math.max(0, smmLen - 1))] : null;
+  // The ACTIVE list length drives the skeleton/empty branches: in SMM mode
+  // the tests list may be empty while the specialist/event feed has cards.
+  const activeLen = smmActive ? smmLen : tests.length;
   const setDashSearch = useDashboardStore(s => s.setDashSearch);
   const dashSearchOpen = useDashboardStore(s => s.dashSearchOpen);
   const setDashSearchOpen = useDashboardStore(s => s.setDashSearchOpen);
@@ -1007,16 +1025,26 @@ export default function DashboardView({
                     : (viewingUser.name || '?').trim().slice(0, 1).toUpperCase() || '?'}
                 </span>
               )}
-              <Button onClick={startCreateTest} className="rounded-full bg-primary hover:bg-primary/90 shrink-0 h-8 w-8 p-0 sm:h-9 sm:w-auto sm:px-4 lg:h-10 lg:text-sm">
-                <Plus className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">{t('createTest')}</span>
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setEditMode(v => !v)}
-                className={`rounded-full shrink-0 h-8 w-8 p-0 sm:h-9 sm:w-auto sm:px-4 lg:h-10 lg:text-sm ${editMode ? 'bg-cta hover:bg-cta/90 text-white border-cta' : 'border-black'}`}
-              >
-                <Edit className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">{t('editTest')}</span>
-              </Button>
+              {/* «+» — in SMM mode the customer's create action is the EVENT
+              creation page (the test editor's twin); the label follows the
+              action. A specialist creates no events — the button hides. */}
+              {(!smmActive || mySmmRole === 'customer') && (
+                <Button onClick={startCreateTest} className="rounded-full bg-primary hover:bg-primary/90 shrink-0 h-8 w-8 p-0 sm:h-9 sm:w-auto sm:px-4 lg:h-10 lg:text-sm">
+                  <Plus className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">{smmActive && mySmmRole === 'customer' ? t('smmCreateEvent') : t('createTest')}</span>
+                </Button>
+              )}
+              {/* The «Изменить» toggle switches the tests edit-mode — it makes
+              no sense over an SMM feed (edits there are per-card on OWN
+              events/specialists), so it hides in SMM mode. */}
+              {!smmActive && (
+                <Button
+                  variant="outline"
+                  onClick={() => setEditMode(v => !v)}
+                  className={`rounded-full shrink-0 h-8 w-8 p-0 sm:h-9 sm:w-auto sm:px-4 lg:h-10 lg:text-sm ${editMode ? 'bg-cta hover:bg-cta/90 text-white border-cta' : 'border-black'}`}
+                >
+                  <Edit className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">{t('editTest')}</span>
+                </Button>
+              )}
             </div>
             <div className="flex items-center gap-1 sm:gap-2 shrink-0 ml-auto">
               <Button
@@ -1464,94 +1492,25 @@ export default function DashboardView({
                       )}
                     </div>
                   </SwiperSlide>
-                ) : smmFeed.items.map((item: any, idx: number) => {
+                ) : visibleSmmItems.map((item: any, idx: number) => {
                   const isCurSmm = idx === Math.min(dashTestIdx, smmLen - 1);
                   if (smmFeed.kind === 'events') {
+                    // The shared EVENT slide — the IDENTICAL card the
+                    // customer's «Мероприятия» page draws (one component, so
+                    // the two sides can never drift apart visually).
                     const ev = item;
-                    const evPinned = smmBmEvents.includes(ev.id);
                     return (
-                      <SwiperSlide key={ev.id} className="relative !h-full overflow-hidden" style={{ backgroundColor: smmCoverColor(ev.id) }}>
-                        <div className="h-full w-full flex flex-col items-center justify-center px-3 py-3 sm:px-4 sm:py-4 lg:py-6 lg:pb-40 min-h-0">
-                          <div className="w-full max-w-md lg:max-w-3xl flex flex-col gap-2.5 sm:gap-4 [@media(max-height:700px)]:gap-1.5 min-h-0">
-                            <CreatorStrip
-                              name={ev.customer?.name || ''}
-                              creatorId={ev.customer?.id}
-                              image={ev.customer?.image || null}
-                              bookmarked={evPinned}
-                              onToggleBookmark={() => toggleSmmBookmark('event', ev.id)}
-                              addLabel={t('bookmarkAdd')}
-                              removeLabel={t('bookmarkRemove')}
-                              addShort={t('bookmarkAddShort')}
-                              removeShort={t('bookmarkRemoveShort')}
-                              onOpenProfile={ev.customer ? () => openUserLibrary({ id: ev.customer.id, name: ev.customer.name, image: ev.customer.image }) : undefined}
-                              openLabel={t('openProfile')}
-                              title={ev.title}
-                            />
-                            <div className="rounded-3xl border-2 border-black/10 bg-white/85 backdrop-blur px-4 py-3 space-y-2">
-                              <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-                                {ev.kind === 'government' ? <Landmark className="w-3.5 h-3.5" /> : <Building2 className="w-3.5 h-3.5" />}
-                                {ev.kind === 'government' ? t('smmKindGovernment') : t('smmKindBusiness')}
-                              </div>
-                              {ev.summary && <p className="text-sm font-semibold leading-snug line-clamp-3">{ev.summary}</p>}
-                              {ev.brief && <p className="text-xs text-muted-foreground whitespace-pre-wrap line-clamp-4">{ev.brief}</p>}
-                              <div className="flex flex-wrap gap-1.5 text-[11px]">
-                                {ev.deadline && <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5"><CalendarClock className="w-3 h-3" />{ev.deadline}</span>}
-                                {ev.budget && <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5"><Banknote className="w-3 h-3" />{ev.budget}</span>}
-                                {ev.restrictions && <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5"><ShieldAlert className="w-3 h-3" />{ev.restrictions}</span>}
-                              </div>
-                              {(ev.roles || []).length > 0 && (
-                                <div className="space-y-1">
-                                  {(ev.roles || []).slice(0, 3).map((r: any) => (
-                                    <div key={r.id} className="flex items-center gap-1.5 text-xs">
-                                      <UserPlus className="w-3 h-3 text-cta shrink-0" />
-                                      <span className="font-semibold truncate">{r.name}</span>
-                                      {r.payment && <span className="text-muted-foreground truncate">· {r.payment}</span>}
-                                    </div>
-                                  ))}
-                                  {(ev.roles || []).length > 3 && <p className="text-[11px] text-muted-foreground">{t('smmRolesN', { n: (ev.roles || []).length })}</p>}
-                                </div>
-                              )}
-                              {(ev.customerOtherEvents || []).length > 0 && (
-                                <div className="space-y-1 border-t border-black/5 pt-1.5">
-                                  <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">{t('smmOtherEvents')}</p>
-                                  {(ev.customerOtherEvents || []).map((o: any) => (
-                                    <div key={o.id} className="flex items-center gap-1.5 text-xs">
-                                      <Building2 className="w-3 h-3 text-muted-foreground shrink-0" />
-                                      <span className="font-semibold truncate">{o.title}</span>
-                                      <span className="text-muted-foreground shrink-0">· {t('smmRolesN', { n: o.rolesCount })}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                            {!editMode && (
-                              <>
-                                <button type="button" onClick={() => openCardGroupChat({ ...ev, id: `smm-e:${ev.id}`, title: ev.title, smmKind: 'event' })} className="shrink-0 w-full flex items-center gap-1.5 rounded-2xl border-2 border-black bg-white px-3 py-1.5 [@media(max-height:700px)]:py-1 text-left hover:bg-muted/50 transition-colors">
-                                  <MessageCircle className="w-4 h-4 shrink-0" />
-                                  <span className="font-semibold text-sm">{t('chat')}</span>
-                                  <ChevronRight className="w-4 h-4 ml-auto shrink-0" />
-                                </button>
-                                {(ev.filesCount || 0) > 0 && (
-                                  <button type="button" onClick={() => openCardFiles({ ...ev, id: `smm-e:${ev.id}`, title: ev.title, smmKind: 'event' })} className="shrink-0 w-full flex items-center gap-1.5 rounded-2xl border-2 border-black bg-white px-3 py-1.5 [@media(max-height:700px)]:py-1 text-left hover:bg-muted/50 transition-colors">
-                                    <Paperclip className="w-4 h-4 shrink-0" />
-                                    <span className="font-semibold text-sm">{t('attachedFiles', { n: ev.filesCount })}</span>
-                                    <ChevronRight className="w-4 h-4 ml-auto shrink-0" />
-                                  </button>
-                                )}
-                                {!discoverMode && !viewingUser && evPinned && (
-                                  <button type="button" onClick={() => toggleSmmBookmark('event', ev.id)} className="shrink-0 w-full flex items-center gap-1.5 rounded-2xl border-2 border-black bg-white px-3 py-1.5 [@media(max-height:700px)]:py-1 text-left hover:bg-muted/50 transition-colors">
-                                    <BookmarkX className="w-4 h-4 shrink-0" />
-                                    <span className="font-semibold text-sm">{t('unpinBtn')}</span>
-                                  </button>
-                                )}
-                              </>
-                            )}
-                            {isCurSmm && editMode && (
-                              <p className="text-xs text-muted-foreground text-center">{t('editModeOn')}</p>
-                            )}
-                          </div>
-                        </div>
-                      </SwiperSlide>
+                      <SmmEventSlide
+                        key={ev.id}
+                        ev={ev}
+                        pinned={smmBmEvents.includes(ev.id)}
+                        isOwner={false}
+                        editMode={editMode}
+                        onToggleBookmark={() => toggleSmmBookmark('event', ev.id)}
+                        onOpenProfile={ev.customer ? () => openUserLibrary({ id: ev.customer.id, name: ev.customer.name, image: ev.customer.image }) : undefined}
+                        onChat={() => openCardGroupChat({ ...ev, id: `smm-e:${ev.id}`, title: ev.title, smmKind: 'event' })}
+                        onFiles={(ev.filesCount || 0) > 0 ? () => openCardFiles({ ...ev, id: `smm-e:${ev.id}`, title: ev.title, smmKind: 'event' }) : undefined}
+                      />
                     );
                   }
                   const sp = item;

@@ -223,10 +223,12 @@ export const api = {
 
   // ─── SMM marketplace ─────────────────────────────────────────────────────
   // Role-aware feed: a customer browses SPECIALISTS, a specialist EVENTS.
-  getSmmFeed: (params: { scope?: 'mine' | 'discover'; limit?: number }) =>
+  // kind overrides the role default (the customer's «Мероприятия» page).
+  getSmmFeed: (params: { scope?: 'mine' | 'discover'; limit?: number; kind?: 'specialists' | 'events' }) =>
     apiFetch(`/smm/feed?${new URLSearchParams({
       ...(params.scope ? { scope: params.scope } : {}),
       ...(params.limit ? { limit: String(params.limit) } : {}),
+      ...(params.kind ? { kind: params.kind } : {}),
     })}`) as Promise<{ kind: 'specialists' | 'events'; items: any[] }>,
   getSmmProfile: () => apiFetch('/smm/profile'),
   updateSmmProfile: (data: { smmRole?: string; smmHeadline?: string; smmResume?: string; smmVideoUrl?: string | null; smmCity?: string; smmRate?: string; smmReady?: boolean }) =>
@@ -241,6 +243,9 @@ export const api = {
   createSmmEvent: (data: any) => apiFetch('/smm/events', { method: 'POST', body: JSON.stringify(data) }),
   updateSmmEvent: (id: string, data: any) => apiFetch(`/smm/events/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteSmmEvent: (id: string) => apiFetch(`/smm/events/${id}`, { method: 'DELETE' }),
+  // Share: 'link' copies through, 'community' flips isPublic (owner-only).
+  shareSmmEvent: (id: string, scope: 'link' | 'community') =>
+    apiFetch(`/smm/events/${id}/share`, { method: 'POST', body: JSON.stringify({ scope }) }) as Promise<{ ok: boolean; isPublic: boolean }>,
   addSmmRole: (eventId: string, data: { name: string; brief?: string; payment?: string; deadline?: string }) =>
     apiFetch(`/smm/events/${eventId}/roles`, { method: 'POST', body: JSON.stringify(data) }),
   updateSmmRole: (id: string, data: any) => apiFetch(`/smm/roles/${id}`, { method: 'PUT', body: JSON.stringify(data) }),

@@ -76,13 +76,25 @@ function specialistPayload(u: Record<string, unknown> & { id: string }, filesCou
 }
 
 /** The dashboard feed, role-aware. scope "mine" = the personal library
- * (bookmarked specialists / bookmarked events), "discover" = everything. */
-export async function getSmmFeed(userId: string, scope: "mine" | "discover", limit = 12) {
+ * (bookmarked specialists / bookmarked events), "discover" = everything.
+ * kindOverride "events" lets a CUSTOMER browse events too (the customer's
+ * «Мероприятия» page): mine = own + pinned events, discover = public open. */
+export async function getSmmFeed(
+  userId: string,
+  scope: "mine" | "discover",
+  limit = 12,
+  kindOverride?: "events" | "specialists" | null,
+) {
   const me = await db.user.findUnique({ where: { id: userId }, select: { smmRole: true } });
   if (!me) throw ApiError.unauthorized("Not authenticated");
 
-  if (me.smmRole === "specialist") {
-    // Specialist browses EVENTS
+  const wantsEvents = kindOverride === "events" || (!kindOverride && me.smmRole === "specialist");
+
+  if (wantsEvents) {
+    // Events feed — the specialist's dashboard AND the customer's
+    // «Мероприятия» page. Personal scope = the customer's OWN events plus
+    // the pinned ones; discover = every PUBLIC OPEN event (the general
+    // events library — the same rule the tests' community library uses).
     const bm = await db.smmBookmark.findMany({
       where: { userId, targetType: "event" },
       select: { targetId: true },
@@ -90,17 +102,19 @@ export async function getSmmFeed(userId: string, scope: "mine" | "discover", lim
     const pinnedIds = bm.map(b => b.targetId);
     const events = await db.smmEvent.findMany({
       where: scope === "mine"
-        ? { id: { in: pinnedIds } }
+        // Personal library: the customer's OWN events + the pinned ones.
+        // (For a specialist the OR-branch never matches — they own no events.)
+        ? { OR: [{ customerId: userId }, { id: { in: pinnedIds } }] }
         : { isPublic: true, status: "open" },
       orderBy: { createdAt: "desc" },
       take: Math.min(limit, 50),
       select: {
         id: true, title: true, summary: true, brief: true, deadline: true,
         budget: true, restrictions: true, kind: true, coverColor: true,
-        coverIcon: true, status: true, createdAt: true, customerId: true,
+        coverIcon: true, status: true, isPublic: true, createdAt: true, customerId: true,
         customer: { select: { id: true, name: true, image: true } },
         roles: { orderBy: { orderNum: "asc" }, select: { id: true, name: true, brief: true, payment: true, deadline: true } },
-        _count: { select: { applications: true } },
+        _count: { select: { applications: { where: { status: "pending" } } } },
       },
     });
     const [fileCounts, others] = await Promise.all([
@@ -122,13 +136,15 @@ export async function getSmmFeed(userId: string, scope: "mine" | "discover", lim
         ...e,
         filesCount: fcMap.get(e.id) || 0,
         applicationsCount: e._count.applications,
+        pendingApplications: e._count.applications,
         customerOtherEvents: others.get(e.customerId) || [],
         _count: undefined,
       })),
     };
   }
 
-  // Customer browses SPECIALISTS
+  // Customer browses SPECIALISTS (the dashboard feed; the customer's own
+  // events feed lives on the «Мероприятия» page — kind=events override)
   const bm = await db.smmBookmark.findMany({
     where: { userId, targetType: "specialist" },
     select: { targetId: true },
@@ -278,6 +294,29 @@ export async function deleteEvent(eventId: string, userId: string) {
   const files = await db.smmFile.findMany({ where: { ownerType: "event", ownerId: eventId }, select: { url: true, tgMessageId: true } });
   await db.smmEvent.delete({ where: { id: eventId } });
   return { removedFiles: files.length };
+}
+
+// ------------------------------------------------------------- sharing --
+
+/** Share an event — the exact analogue of shareTest:
+ *   scope "link"      → copy-through (the link opens the event for anyone);
+ *   scope "community" → OWNER-ONLY flip of isPublic — the event joins or
+ *                       leaves the general events library (the discover feed). */
+export async function shareEvent(userId: string, eventId: string, body: { scope?: "link" | "community" }) {
+  const scope = body.scope || "link";
+  const ev = await db.smmEvent.findUnique({
+    where: { id: eventId },
+    select: { id: true, customerId: true, isPublic: true },
+  });
+  if (!ev) throw ApiError.notFound("Event not found");
+  if (scope === "community") {
+    await assertEventOwner(eventId, userId);
+    const next = !ev.isPublic;
+    await db.smmEvent.update({ where: { id: eventId }, data: { isPublic: next } });
+    return { ok: true, isPublic: next };
+  }
+  // link — no ownership requirement (any viewer can copy the direct link)
+  return { ok: true, isPublic: ev.isPublic };
 }
 
 // ----------------------------------------------------------------- roles --

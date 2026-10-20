@@ -146,6 +146,11 @@ export const shareTestSchema = z.object({
   scope: z.enum(["link", "community"]).optional().catch("link" as const),
 });
 
+// The event's share — the exact analogue of shareTestSchema.
+export const smmEventShareSchema = z.object({
+  scope: z.enum(["link", "community"]).optional().catch("link" as const),
+});
+
 export const saveTranslationsSchema = z.object({
   lang: z.enum(["en", "ru", "uz"]),
   items: z

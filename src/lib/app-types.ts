@@ -7,7 +7,7 @@
 // 'guest-boot' — the anonymous share-link landing: the visitor opened
 // ?test=<id> without a session; the app boots that one test into the taking
 // screen while this splash is up. Guests can reach NOTHING else.
-export type Page = 'auth' | 'dashboard' | 'create-test' | 'edit-test' | 'start-test' | 'take-test' | 'history' | 'profile' | 'guest-boot' | 'smm-events' | 'smm-inbox' | 'smm-wizard';
+export type Page = 'auth' | 'dashboard' | 'create-test' | 'edit-test' | 'create-event' | 'start-test' | 'take-test' | 'history' | 'profile' | 'guest-boot' | 'smm-events' | 'smm-inbox' | 'smm-wizard';
 
 export interface Question {
   id?: string;

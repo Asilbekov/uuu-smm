@@ -27,6 +27,11 @@ interface SmmData {
   wizardBusy: boolean;
   // The customer's own events cache (loaded when the wizard opens)
   myEvents: SmmEventItem[];
+  // Invite FROM the events page: the event is preset, the SPECIALIST is
+  // picked inside the wizard (an extra «specialist» stage). The candidate
+  // list is fetched once when the flow opens.
+  invitePickSpecialist: boolean;
+  specialistCandidates: SmmSpecialist[];
   // Personal-library pins: target ids per kind (bookmark buttons on cards)
   smmBmSpecialists: string[];
   smmBmEvents: string[];
@@ -42,6 +47,8 @@ const INITIAL: SmmData = {
   wizardMessage: '',
   wizardBusy: false,
   myEvents: [],
+  invitePickSpecialist: false,
+  specialistCandidates: [],
   smmBmSpecialists: [],
   smmBmEvents: [],
 };

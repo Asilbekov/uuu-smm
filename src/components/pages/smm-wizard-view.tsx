@@ -49,6 +49,8 @@ export default function SmmWizardView({ goHome, onConfirm, onCreateEvent }: SmmW
   const setWizardMessage = useSmmStore(s => s.setWizardMessage);
   const wizardBusy = useSmmStore(s => s.wizardBusy);
   const myEvents = useSmmStore(s => s.myEvents);
+  const invitePickSpecialist = useSmmStore(s => s.invitePickSpecialist);
+  const specialistCandidates = useSmmStore(s => s.specialistCandidates);
   const lang = useSessionStore(s => s.lang);
   const t = React.useCallback((key: string, vars?: Record<string, string | number>) => tUI(lang, key, vars), [lang]);
   const swRef = React.useRef<SwiperClass | null>(null);
@@ -61,11 +63,16 @@ export default function SmmWizardView({ goHome, onConfirm, onCreateEvent }: SmmW
     : wizardEvent;
   const roles: SmmRoleItem[] = srcEvent?.roles || [];
 
-  // Stage keys — each becomes one slide in the select phase
-  const steps: string[] = isInvite ? ['event', 'role', 'message'] : ['role', 'message'];
+  // Stage keys — each becomes one slide in the select phase. Invites opened
+  // FROM the events page preset the event and add the «specialist» pick
+  // stage (the flow is event → role → WHO → message).
+  const steps: string[] = isInvite
+    ? (invitePickSpecialist ? ['event', 'role', 'specialist', 'message'] : ['event', 'role', 'message'])
+    : ['role', 'message'];
   const stepTitles: Record<string, string> = {
     event: t('smmStepEvent'),
     role: t('smmStepRole'),
+    specialist: t('smmStepSpecialist'),
     message: t('smmStepMessage'),
   };
   // Review cards — every earlier choice as its own swipeable card
@@ -82,6 +89,7 @@ export default function SmmWizardView({ goHome, onConfirm, onCreateEvent }: SmmW
     const key = steps[Math.min(activeIdx, steps.length - 1)];
     if (key === 'event') return !!selEventId;
     if (key === 'role') return !!selRoleId;
+    if (key === 'specialist') return !!wizardSpecialist;
     return true;
   })();
 
@@ -155,6 +163,35 @@ export default function SmmWizardView({ goHome, onConfirm, onCreateEvent }: SmmW
                         {r.deadline && <span className="inline-flex items-center gap-1"><CalendarClock className="w-3 h-3" />{r.deadline}</span>}
                       </p>
                     )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      );
+    }
+    if (key === 'specialist') {
+      // The invite-from-event flow: the SPECIALIST is picked here (the
+      // candidates come from the general specialists feed).
+      return (
+        <Card className="border-0 shadow-lg">
+          <CardContent className="p-5">
+            {slideHead(<Megaphone className="w-7 h-7 text-white" />, t('smmStepSpecialist'), t('smmStepSpecialistHint'))}
+            {specialistCandidates.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">{t('smmEmptySpecialists')}</p>
+            ) : (
+              <div className="space-y-2 max-h-[46vh] overflow-y-auto">
+                {specialistCandidates.map(sp => (
+                  <button key={sp.id} type="button" onClick={() => useSmmStore.getState().setWizardSpecialist(sp)} className={rowCls(wizardSpecialist?.id === sp.id)}>
+                    <div className="flex items-center gap-2">
+                      <span className="w-8 h-8 rounded-full bg-cta text-white flex items-center justify-center text-xs font-extrabold shrink-0">{(sp.name || '?').slice(0, 1).toUpperCase()}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-sm truncate">{sp.name}</p>
+                        {sp.headline && <p className="text-xs text-muted-foreground truncate">{sp.headline}</p>}
+                      </div>
+                      {wizardSpecialist?.id === sp.id && <CheckCircle2 className="w-4 h-4 text-cta shrink-0" />}
+                    </div>
                   </button>
                 ))}
               </div>

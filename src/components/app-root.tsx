@@ -149,8 +149,10 @@ import DashboardView from '@/components/pages/dashboard-view';
 import type { FeedApi } from '@/components/pages/dashboard-view';
 import SmmWizardView from '@/components/pages/smm-wizard-view';
 import SmmEventsView from '@/components/pages/smm-events-view';
+import SmmEventEditorView from '@/components/pages/smm-event-editor-view';
 import SmmInboxView from '@/components/pages/smm-inbox-view';
 import { useSmmStore, smmNow } from '@/stores/smm-store';
+import { useEventEditorStore, resetEventForm, eventEditorNow } from '@/stores/event-editor-store';
 import CreateEditView from '@/components/pages/create-edit-view';
 import LangButton from '@/components/lang-button';
 import { CreatorStrip, TranslatingPill, topicBgClass, tagHash, coverBgFor, imgSrc, GLASS_TILE } from '@/components/shared-bits';
@@ -720,6 +722,36 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     }).catch(() => {});
   }, []);
 
+  // ─── The customer's EVENTS PAGE feed (kind=events override) ──────────────
+  // Personal scope = the customer's OWN events + the pinned ones; discover =
+  // the general events library (every public open event). The events page is
+  // the dashboard's twin: same panels, same view kinds, event cards instead
+  // of specialist cards.
+  const [eventsScope, setEventsScope] = useState<'mine' | 'discover'>('mine');
+  const [eventsItems, setEventsItems] = useState<any[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [focusEventId, setFocusEventId] = useState<string | null>(null);
+  const eventsScopeRef = useRef(eventsScope);
+  eventsScopeRef.current = eventsScope;
+  const refreshEventsFeed = useCallback(async (scopeOverride?: 'mine' | 'discover', focusId?: string | null) => {
+    const st = useSessionStore.getState();
+    const uid = st.user?.id || st.hydratedUser?.id;
+    if (!uid) return;
+    const scope = scopeOverride || eventsScopeRef.current;
+    setEventsLoading(true);
+    try {
+      const feed = await api.getSmmFeed({ scope, limit: 30, kind: 'events' });
+      setEventsItems(feed.items || []);
+    } catch { /* transient */ }
+    setEventsLoading(false);
+    if (focusId !== undefined) setFocusEventId(focusId);
+  }, []);
+  const changeEventsScope = useCallback((s: 'mine' | 'discover') => {
+    setEventsScope(s);
+    eventsScopeRef.current = s;
+    void refreshEventsFeed(s);
+  }, [refreshEventsFeed]);
+
   useEffect(() => {
     void (async () => {
       const me = await api.getSession();
@@ -1080,11 +1112,54 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     });
   });
 
+  // Shared EVENT link (?event=<id>): open that event's card on the events
+  // page — the events analogue of the tests' ?test= deep link. A guest who
+  // opens the link lands on the auth screen first; the URL stays intact, so
+  // right after login/registration this handler fires and opens the event.
+  const sharedEventHandledRef = useRef(false);
+  useEffect(() => {
+    if (sharedEventHandledRef.current || !dataReady || !effectiveUser || effectivePage !== 'dashboard') return;
+    let raw: string | null = null;
+    try { raw = new URLSearchParams(window.location.search).get('event'); } catch { raw = null; }
+    if (!raw) return;
+    sharedEventHandledRef.current = true; // guard before the async work
+    const id = raw.trim().slice(0, 40);
+    const cleanUrl = () => { try { window.history.replaceState({}, '', window.location.pathname); } catch {} };
+    api.getSmmEvent(id).then((detail: any) => {
+      const own = detail.customerId === effectiveUser.id;
+      setEventsScope(own ? 'mine' : 'discover');
+      eventsScopeRef.current = own ? 'mine' : 'discover';
+      setEventsItems(prev => (prev.some(x => x.id === id) ? prev : [detail, ...prev]));
+      setFocusEventId(id);
+      setPage('smm-events');
+      cleanUrl();
+    }).catch((e: any) => {
+      // The linked event is gone or hidden: dead-link screen (the same
+      // behavior the tests' deep link has); transient failures stay silent.
+      if (String(e?.message || '').toLowerCase().includes('not found')) setDeadLink(true);
+      else cleanUrl();
+    });
+  });
+
+  // Every open of the events page revalidates its feed in the background
+  // (the cached items paint first, the refresh slides in silently).
+  useEffect(() => {
+    if (effectivePage === 'smm-events' && effectiveUser) void refreshEventsFeed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectivePage]);
+
   // Header search (tests context): debounce 350ms, server-side /api/feed?q=
+  // In SMM mode the search filters the SMM feed LOCALLY instead (see
+  // dashboard-view) — the tests tag search stays out of the marketplace.
   useEffect(() => {
     if (effectivePage !== 'dashboard') return;
     const q = dashSearch.trim();
     if (q.length < 2) { setDashSearchResults(null); setDashTagInfo(null); setDashSearching(false); return; }
+    if (effectiveUser && !navNow().viewingUser && (navNow().dashView === 'tiktok1' || navNow().dashView === 'tiktok2')) {
+      // The SMM TikTok feed is active — the search filters it locally (see
+      // dashboard-view); the tests tag dropdown stays out of the marketplace.
+      setDashSearchResults(null); setDashTagInfo(null); setDashSearching(false); return;
+    }
     setDashSearching(true);
     let alive = true;
     const t = setTimeout(() => {
@@ -1541,8 +1616,90 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     resetTestFormStore();
   };
 
+  // ─── Event editor (the «+» action over the SMM feed) ────────────────────
+  // The customer's full-page event editor — the visual twin of the test
+  // editor: same header, same collapsible section cards, same bottom bar.
+  const [eventSaving, setEventSaving] = useState(false);
+  // The event-delete confirmation dialog id (the ladder's «Удалить» asks
+  // before the cascade removes roles/invites/apps/files).
+  const [deleteEventId, setDeleteEventId] = useState<string | null>(null);
+  const startCreateEvent = () => {
+    resetEventForm();
+    setPage('create-event');
+  };
+  const startEditEvent = (ev: any) => {
+    // OWNERSHIP (the brief): a customer edits ONLY the events they created.
+    // Somebody else's event never opens in the editor — a toast explains.
+    if (!effectiveUser) return;
+    if (ev.customerId !== effectiveUser.id) {
+      toast({ title: t('smmOnlyOwnEvents'), variant: 'destructive' });
+      return;
+    }
+    useEventEditorStore.setState({
+      evTitle: ev.title || '', evSummary: ev.summary || '', evBrief: ev.brief || '',
+      evDeadline: ev.deadline || '', evBudget: ev.budget || '', evRestrictions: ev.restrictions || '',
+      evKind: ev.kind === 'government' ? 'government' : 'business',
+      evCoverColor: ev.coverColor || '', evIsPublic: ev.isPublic !== false,
+      roles: (ev.roles || []).map((r: any) => ({ id: r.id, name: r.name || '', brief: r.brief || '', payment: r.payment || '', deadline: r.deadline || '' })),
+      editingEventId: ev.id, evFiles: [],
+      evInfoExpanded: true, evFilesExpanded: false, evCoverExpanded: false, evRolesExpanded: false,
+      evFileBusy: false,
+    });
+    api.getSmmFiles('event', ev.id)
+      .then((items: any[]) => useEventEditorStore.setState({ evFiles: items || [] }))
+      .catch(() => {});
+    setPage('create-event');
+  };
+  const handleSaveEvent = async () => {
+    const st = eventEditorNow();
+    if (!st.evTitle.trim() || eventSaving) return;
+    setEventSaving(true);
+    try {
+      const payload: any = {
+        title: st.evTitle.trim(), summary: st.evSummary, brief: st.evBrief,
+        deadline: st.evDeadline, budget: st.evBudget, restrictions: st.evRestrictions,
+        kind: st.evKind, coverColor: st.evCoverColor || null, isPublic: st.evIsPublic,
+      };
+      if (st.editingEventId) {
+        await api.updateSmmEvent(st.editingEventId, payload);
+        toast({ title: t('smmEventSavedToast') });
+      } else {
+        const created = await api.createSmmEvent({
+          ...payload,
+          roles: st.roles.filter(r => r.name.trim()).map(r => ({ name: r.name.trim(), brief: r.brief, payment: r.payment, deadline: r.deadline })),
+        });
+        toast({ title: t('smmEventCreated') });
+        // The fresh event lands at the top of the personal events library —
+        // no reload, the feed slides straight to it.
+        setEventsItems(prev => [{
+          ...created,
+          filesCount: 0,
+          pendingApplications: 0,
+          customer: effectiveUser ? { id: effectiveUser.id, name: effectiveUser.name, image: (effectiveUser as any).image || null } : null,
+          customerOtherEvents: [],
+        }, ...prev]);
+        setFocusEventId(created.id);
+      }
+      // The event may have joined/left the general library — the dashboard's
+      // SMM feed revalidates in the background.
+      void refreshSmmFeed();
+      setPage('smm-events');
+    } catch (e: any) {
+      toast({ title: t('error'), description: e?.message || 'Error', variant: 'destructive' });
+    }
+    setEventSaving(false);
+  };
+
   const startCreateTest = () => {
     setViewingUser(null); // creating always happens in the user's own library
+    // Over the SMM TikTok feed the customer's «+» creates an EVENT (the
+    // full-page twin of this editor); over the tests grids (library/shelf —
+    // the tests site's own surface) it keeps creating TESTS.
+    const v = navNow().dashView;
+    if ((v === 'tiktok1' || v === 'tiktok2') && !navNow().viewingUser && mySmmRole === 'customer') {
+      startCreateEvent();
+      return;
+    }
     resetTestForm();
     setPage('create-test');
   };
@@ -2763,6 +2920,8 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     st.setWizardMessage('');
     st.setWizardStep(0);
     st.setWizardBusy(false);
+    st.setInvitePickSpecialist(false); // the specialist is preset — no pick stage
+    st.setSpecialistCandidates([]);
     if (mode === 'invite') {
       try {
         const evs = await api.getMySmmEvents();
@@ -2791,7 +2950,8 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     }
   };
   // Wizard confirmation («Подтвердить»): send the invitation / application →
-  // back to the feed — the ending the brief describes.
+  // back to the feed — the ending the brief describes. Invites opened from
+  // the events page return there (and refresh its feed).
   const confirmSmmWizard = async () => {
     const st = smmNow();
     if (st.wizardBusy) return;
@@ -2800,6 +2960,7 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     } else {
       if (!st.wizardEvent?.id || !st.selRoleId) return;
     }
+    const fromEventsPage = st.invitePickSpecialist;
     st.setWizardBusy(true);
     try {
       if (st.wizardMode === 'invite') {
@@ -2816,8 +2977,11 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
       st.setSelRoleId(null);
       st.setWizardMessage('');
       st.setWizardStep(0);
-      setPage('dashboard');
+      st.setInvitePickSpecialist(false);
+      st.setSpecialistCandidates([]);
+      setPage(fromEventsPage ? 'smm-events' : 'dashboard');
       refreshSmmFeed();
+      if (fromEventsPage) void refreshEventsFeed();
     } catch (e: any) {
       toast({ title: t('error'), description: e?.message || 'Error', variant: 'destructive' });
     }
@@ -3303,6 +3467,91 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
     } finally {
       setShareBusy(false);
     }
+  };
+
+  // ─── Event share / publish / delete — the exact analogues of the tests'
+  // share trio, scoped to the events page. A customer shares and publishes
+  // only their OWN events (server-enforced too); the link works for anyone.
+  const copyEventLink = async (ev: any) => {
+    const url = `${window.location.origin}/?event=${ev.id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast({ title: t('linkCopied') });
+    } catch {
+      toast({ title: t('error'), description: url, variant: 'destructive' });
+    }
+  };
+  const doShareEventLink = async (ev: any) => {
+    // «Приватная ссылка» — copies the direct event link (?event=<id>);
+    // the link opens the event for anyone who has it.
+    await copyEventLink(ev);
+  };
+  const doMakeEventPublic = async (ev: any) => {
+    if (effectiveUser && ev.customerId !== effectiveUser.id) {
+      toast({ title: t('smmOnlyOwnEvents'), variant: 'destructive' });
+      return;
+    }
+    setShareBusy(true);
+    try {
+      const r = await api.shareSmmEvent(ev.id, 'community');
+      // Mirror the flip into the events page list without a reload
+      setEventsItems(prev => prev.map(x => (x.id === ev.id ? { ...x, isPublic: r.isPublic } : x)));
+      toast({ title: r.isPublic ? t('shareMadePublic') : t('shareMadeLink') });
+      // The general library membership changed — the feeds revalidate
+      void refreshSmmFeed();
+      void refreshEventsFeed();
+      await copyEventLink(ev);
+    } catch (e: any) {
+      toast({ title: t('error'), description: e?.message || 'Error', variant: 'destructive' });
+    } finally {
+      setShareBusy(false);
+    }
+  };
+  const requestDeleteEvent = (ev: any) => {
+    if (effectiveUser && ev.customerId !== effectiveUser.id) {
+      toast({ title: t('smmOnlyOwnEvents'), variant: 'destructive' });
+      return;
+    }
+    setDeleteEventId(ev.id);
+  };
+  const handleDeleteEvent = async () => {
+    if (!deleteEventId) return;
+    try {
+      await api.deleteSmmEvent(deleteEventId);
+      toast({ title: t('smmEventDeleted') });
+      setEventsItems(prev => prev.filter(x => x.id !== deleteEventId));
+      void refreshSmmFeed();
+    } catch (e: any) {
+      toast({ title: t('error'), description: e?.message || 'Error', variant: 'destructive' });
+    }
+    setDeleteEventId(null);
+  };
+
+  // «Пригласить специалиста» FROM the events page: the event is preset, the
+  // wizard gains the «specialist» pick stage (event → role → WHO → message).
+  const openSmmInviteForEvent = async (ev: any) => {
+    if (isGuestNow()) { setRegisterWall('home'); return; }
+    if (effectiveUser && ev.customerId !== effectiveUser.id) {
+      toast({ title: t('smmOnlyOwnEvents'), variant: 'destructive' });
+      return;
+    }
+    const st = useSmmStore.getState();
+    st.setWizardMode('invite');
+    st.setWizardSpecialist(null); // picked inside the wizard's specialist stage
+    st.setWizardEvent(ev);
+    st.setSelEventId(ev.id);
+    st.setSelRoleId(null);
+    st.setWizardMessage('');
+    st.setWizardStep(0);
+    st.setWizardBusy(false);
+    st.setMyEvents([{ ...ev, roles: ev.roles || [] }]);
+    st.setInvitePickSpecialist(true);
+    st.setSpecialistCandidates([]);
+    setPage('smm-wizard');
+    // The candidates come from the general specialists feed (fetched once)
+    api.getSmmFeed({ scope: 'discover', limit: 50 })
+      .then((f: any) => { if (f?.kind === 'specialists') useSmmStore.getState().setSpecialistCandidates(f.items || []); })
+      .catch(() => {});
   };
 
   // Jump to a test from the search dropdown: scroll to it if already loaded,
@@ -4373,10 +4622,76 @@ function AppRootInner({ authed, guestTest }: { authed: boolean; guestTest?: stri
       />
     );
   }
-  // SMM EVENTS — the customer's events manager: the brief, the roles tab
-  // (ТЗ templates + assigned specialists), applications and invitations.
+  // CREATE / EDIT EVENT — the full-page editor, the visual twin of the test
+  // editor (create-edit-view): the customer creates events with the SAME
+  // UX the tests have, only the text is different.
+  if (effectivePage === 'create-event') {
+    return (
+      <SmmEventEditorView
+        goHome={() => setPage('smm-events')}
+        handleSaveEvent={handleSaveEvent}
+        busy={eventSaving}
+      />
+    );
+  }
+  // SMM EVENTS — the customer's events page, the dashboard's twin: the same
+  // top panel and dock, the same TikTok / library / shelf views with EVENT
+  // cards, the ownership-scoped edit/share/publish/delete ladder and the
+  // «Пригласить специалиста» wizard entry.
   if (effectivePage === 'smm-events') {
-    return <SmmEventsView goHome={() => setPage('dashboard')} />;
+    return (
+      <>
+        <SmmEventsView
+          user={effectiveUser ? { id: effectiveUser.id, name: effectiveUser.name, email: (effectiveUser as any).email || '', image: (effectiveUser as any).image || null } : null}
+          myAvatar={myAvatar}
+          events={eventsItems}
+          eventsLoading={eventsLoading}
+          pinnedEventIds={smmBmEvents}
+          scope={eventsScope}
+          onScopeChange={changeEventsScope}
+          focusEventId={focusEventId}
+          goHome={() => setPage('dashboard')}
+          onCreateEvent={startCreateEvent}
+          onEditEvent={startEditEvent}
+          onDeleteEvent={requestDeleteEvent}
+          onShareEvent={doShareEventLink}
+          onPublicEvent={doMakeEventPublic}
+          onInvite={openSmmInviteForEvent}
+          onChat={(ev: any) => openSmmGroupChat('event', ev)}
+          onFiles={(ev: any) => openSmmFiles('event', ev)}
+          onToggleBookmark={(id: string) => void toggleSmmBookmark('event', id)}
+          onOpenProfileUser={(u: any) => openUserLibrary(u)}
+          onOpenOtherEvent={(o: any) => {
+            // The event card's «customer's other events» row: jump to THAT
+            // event — switch to the general library, fetch it if missing.
+            changeEventsScope('discover');
+            setEventsItems(prev => {
+              if (prev.some(x => x.id === o.id)) return prev;
+              api.getSmmEvent(o.id).then((detail: any) => {
+                setEventsItems(p => (p.some(x => x.id === o.id) ? p : [detail, ...p]));
+                setFocusEventId(o.id);
+              }).catch(() => {});
+              return prev;
+            });
+            setFocusEventId(o.id);
+          }}
+          onOpenProfilePage={() => setPage('profile')}
+          onCycleLang={cycleLang}
+        />
+        <AlertDialog open={!!deleteEventId} onOpenChange={() => setDeleteEventId(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('smmDeleteEventQ')}</AlertDialogTitle>
+              <AlertDialogDescription>{t('smmDeleteEventWarning')}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t('cancel')}</AlertDialogCancel>
+              <AlertDialogAction onClick={handleDeleteEvent} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{t('delete')}</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </>
+    );
   }
   // SMM INBOX — the specialist's invitations + application statuses.
   if (effectivePage === 'smm-inbox') {
